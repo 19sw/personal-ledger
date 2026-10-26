@@ -208,7 +208,20 @@
     '类别预算合计 {0}，高于总预算 {1}': 'Category budgets add up to {0}, more than the total budget {1}',
   });
   P.push([/^从本月起取消“(.+)”的预算？过去月份不受影响。$/, function (m) { return 'Cancel the budget for "' + name(m[1]) + '" from this month? Past months are not affected.'; }]);
-  P.push([/^总预算剩余 (\S+)，(.+)超出 (\S+)。$/, function (m) { return 'Total budget: ' + m[1] + ' left; ' + name(m[2]) + ' is ' + m[3] + ' over.'; }]);
+  // 月报“本月预算小结”：总预算剩余/超出 + 各类别超出/已用，或“各类别预算都在范围内”，用“，”连接，句号结尾
+  P.push([/^(.+)。$/, function (m) {
+    var parts = m[1].split('，').map(function (p) {
+      var x;
+      if ((x = /^总预算(剩余|超出) (\$[\d,]+\.\d{2})$/.exec(p))) return 'Total budget: ' + x[2] + (x[1] === '剩余' ? ' left' : ' over');
+      if (p === '各类别预算都在范围内') return 'all category budgets are within range';
+      if ((x = /^(.+)超出 (\$[\d,]+\.\d{2})$/.exec(p))) return name(x[1]) + ' is ' + x[2] + ' over';
+      if ((x = /^(.+)已用 (\d+%)$/.exec(p))) return name(x[1]) + ' has used ' + x[2];
+      return null;
+    });
+    if (parts.indexOf(null) >= 0) return null;
+    var out = parts.join('; ');
+    return out.charAt(0).toUpperCase() + out.slice(1) + '.';
+  }]);
 
   // ---------- 我的 ----------
   add(E, {

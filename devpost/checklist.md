@@ -130,6 +130,7 @@ Build mode: fast（实际以 PM 带领的多智能体流程进行：每个任务
 - [x] 交易表格：在普通浏览器里点应用内的 Excel 下载按钮能正常下载
 - [x] README 更新（切片 9）
 - [x] 消费习惯：仍是“未分类”的 Apple Pay 账目单独显示为“Apple Pay”，手动改过类别的按手动类别算（你的试用反馈）— 已实现，两张表都改为逐笔分组；`node --test tests/` 380/380；已推送并原地更新为第 10 版（网址不变，无需 setupLedger）；你已在 iPhone 上确认显示正确
+- [x] 月报支出构成：仍是“未分类”的 Apple Pay 显示为“Apple Pay”（你在英文界面试用时提出）；英文月报“本月预算小结”各种组合都能翻译 — 已实现，`node --test tests/` 388/388；已推送并原地更新为第 12 版（网址不变，无需 setupLedger）；你已在 iPhone 上确认显示正确
 - [x] Final review complete — feedback resolved and learner confirms ready to ship（10-26 你确认可以提交）
 
 ## Code Tour and App Map

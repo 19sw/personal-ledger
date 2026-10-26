@@ -157,3 +157,18 @@ test('账目列表的本月汇总 totals：与月报同口径，不受“只看�
     assert.equal(totals.diff_cents, rep.comparison.diff_cents);
   }
 });
+
+test('支出构成：仍是“未分类”的 Apple Pay 单独显示为“Apple Pay”；改过类别的按所选类别；手动记的未分类仍是“未分类”', () => {
+  const t = setup();
+  const applePay = (cents, local, categoryName) => {
+    const e = t.autoPending(categoryName || '未分类', local);
+    t.repo.update('entries', e.id, { amount_cents: cents });
+  };
+  applePay(1500, '2026-01-02T12:00');
+  applePay(2500, '2026-01-03T12:00');
+  applePay(3000, '2026-01-04T12:00', '餐饮');
+  t.expense('7', '未分类', '2026-01-05T12:00');
+  const r = t.report('2026-01');
+  assert.equal(r.expense.total_cents, 7700, '总额不变');
+  assert.deepEqual(rowsOf(r.expense).map((x) => [x[0], x[1]]), [['Apple Pay', 4000], ['餐饮', 3000], ['未分类', 700]]);
+});

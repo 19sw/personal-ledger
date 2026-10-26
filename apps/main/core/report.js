@@ -8,6 +8,7 @@
  */
 
 var UNSPECIFIED_SOURCE_NAME = '未指定来源';
+var APPLE_PAY_GROUP_ID = 'channel:apple_pay';
 
 function computeReport(entries, categories, sources, month) {
   var catById = indexById_(categories);
@@ -27,7 +28,12 @@ function computeReport(entries, categories, sources, month) {
   var expenseTotal = sumCents_(expenses);
   var incomeTotal = sumCents_(incomes);
 
-  var expenseRows = groupRows_(expenses, 'category_id', function (id) {
+  // 仍是“未分类”的 Apple Pay 账目单独成一行“Apple Pay”；手动改过类别的按所选类别（用户 2026-10-26）
+  var expenseRows = groupRows_(expenses, function (e) {
+    var cat = catById[e.category_id];
+    return e.channel === 'apple_pay' && cat && cat.system_key === UNCATEGORIZED_KEY ? APPLE_PAY_GROUP_ID : e.category_id;
+  }, function (id) {
+    if (id === APPLE_PAY_GROUP_ID) return 'Apple Pay';
     return catById[id] ? catById[id].name : '未知类别';
   }, expenseTotal);
 
@@ -70,14 +76,14 @@ function indexById_(list) {
 }
 
 /**
- * 按某个字段分组求和。排序：金额从大到小；净额为负（净退款）的组排在最后，并标 net_refund。
+ * 按某个字段（或返回分组键的函数）分组求和。排序：金额从大到小；净额为负（净退款）的组排在最后，并标 net_refund。
  * 空值（例如没有填写来源）归为同一组，id 为 ''。
  */
 function groupRows_(list, field, nameOf, total) {
   var groups = Object.create(null);
   var order = [];
   list.forEach(function (e) {
-    var key = e[field] || '';
+    var key = (typeof field === 'function' ? field(e) : e[field]) || '';
     if (!(key in groups)) { groups[key] = 0; order.push(key); }
     groups[key] += e.amount_cents;
   });

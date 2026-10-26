@@ -211,3 +211,14 @@ test('语言：翻译器保留首尾空白；跟上月比较的回答用 day 1 t
     'Spent $5.00 from day 1 to day 2 this month; $3.00 in the same period last month (Feb 1–2).');
 });
 
+test('语言：月报“本月预算小结”的各种组合都能翻成英文；自建类别名保持原样', async () => {
+  const app = await openApp({ backend: { now: MAR15 }, lang: 'en' });
+  await app.until(() => app.$('#page-entries .monthnav'), 'Entries');
+  const tr = app.w.I18N.translate;
+  assert.equal(tr('总预算剩余 $830.00。'), 'Total budget: $830.00 left.');
+  assert.equal(tr('总预算超出 $5.00。'), 'Total budget: $5.00 over.');
+  assert.equal(tr('总预算剩余 $830.00，各类别预算都在范围内。'), 'Total budget: $830.00 left; all category budgets are within range.');
+  assert.equal(tr('总预算剩余 $830.00，餐饮超出 $20.00，健身房已用 85%。'), 'Total budget: $830.00 left; Dining is $20.00 over; 健身房 has used 85%.');
+  assert.equal(tr('各类别预算都在范围内。'), 'All category budgets are within range.');
+});
+
