@@ -1,0 +1,31 @@
+# Keep personal learning context out of commits by default.
+/devpost/learner-profile.md
+
+# Local credentials; a secret-free example may be committed.
+.env
+.env.*
+!.env.example
+
+# ---- 以下为第一版应用追加（spec 9.4 / 9.5） ----
+# 依赖包（由 package-lock.json 还原，不提交）
+node_modules/
+
+# clasp 登录凭据（clasp login 生成；正常保存在用户目录，这里防止误放进项目）
+.clasprc.json
+# clasp 项目文件包含脚本 ID：只提交 .clasp.json.example 占位文件
+.clasp.json
+!.clasp.json.example
+
+# 只在本机使用的私密文件、真实收据样本、截图与导出数据
+private/
+*.local.*
+receipts/
+samples/real/
+*.eml
+*.mbox
+
+# 多智能体运行的本机状态（含本机路径，随会话变化）
+.multiagent/active-run.json
+
+# 系统文件
+.DS_Store

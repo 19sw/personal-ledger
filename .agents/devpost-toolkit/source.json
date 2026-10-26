@@ -1,0 +1,73 @@
+{
+  "repository": "https://github.com/challengepost/learn-ai-basics",
+  "commit": "a0f065781873e8a7ed9a9a705a8dafa6a0810439",
+  "skill_paths": [
+    "skills/1-start",
+    "skills/2-scope",
+    "skills/3-prd",
+    "skills/4-spec",
+    "skills/5-build",
+    "skills/6-ship"
+  ],
+  "installed_on": "2026-10-12",
+  "installation_scope": "project",
+  "installation_method": "Codex skill-installer, pinned GitHub download",
+  "verified_files": [
+    {
+      "path": ".agents/skills/1-start/SKILL.md",
+      "git_blob_sha1": "6574abf8025c40a5adc3bd20d4892846e210ecab"
+    },
+    {
+      "path": ".agents/skills/1-start/templates/learner-profile-template.md",
+      "git_blob_sha1": "71d9a2934dc1aec6ade654ffb8958375cc70a451"
+    },
+    {
+      "path": ".agents/skills/2-scope/SKILL.md",
+      "git_blob_sha1": "dcf446f14767b8842063d002f4cd84494bb875b6"
+    },
+    {
+      "path": ".agents/skills/2-scope/templates/scope-template.md",
+      "git_blob_sha1": "9e27b94a6f29e92d6a4bea286d5526df9fab57fa"
+    },
+    {
+      "path": ".agents/skills/3-prd/SKILL.md",
+      "git_blob_sha1": "94b4b92d991b8b1aed7f8606bd532034599bdd80"
+    },
+    {
+      "path": ".agents/skills/3-prd/references/prd-guide.md",
+      "git_blob_sha1": "3cb499f6fa1d6cb5e43f48a7bd354d692c172dde"
+    },
+    {
+      "path": ".agents/skills/3-prd/templates/prd-template.md",
+      "git_blob_sha1": "3773a7b4835649306f1331d582560287f268779a"
+    },
+    {
+      "path": ".agents/skills/4-spec/SKILL.md",
+      "git_blob_sha1": "209ff760d9fd91f1ecef5a65d0b47a4d851dde5e"
+    },
+    {
+      "path": ".agents/skills/4-spec/references/spec-patterns.md",
+      "git_blob_sha1": "1addbbf55b33873b1d1749ffa06c16e10a93786c"
+    },
+    {
+      "path": ".agents/skills/4-spec/templates/spec-template.md",
+      "git_blob_sha1": "6d69e92af295eec8340a89020f71f48fc24d7187"
+    },
+    {
+      "path": ".agents/skills/5-build/SKILL.md",
+      "git_blob_sha1": "2b5bcaf4d29914120d22a796764b8001c8676cd5"
+    },
+    {
+      "path": ".agents/skills/5-build/references/code-tour.md",
+      "git_blob_sha1": "254a9330d4a1784f14e59ec9b0336bbf4c1c82c3"
+    },
+    {
+      "path": ".agents/skills/5-build/templates/checklist-template.md",
+      "git_blob_sha1": "d2323b85f5bde85bab304d61962acf6521eb97d9"
+    },
+    {
+      "path": ".agents/skills/6-ship/SKILL.md",
+      "git_blob_sha1": "ce6ba051527a2d7c9364d3cd93c8814058057d12"
+    }
+  ]
+}

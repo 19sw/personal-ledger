@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <?!= include('ui/style') ?>
+</head>
+<body>
+  <header class="topbar">
+    <!-- 左上角：小猫助手入口（薄荷色猫爪 + 粉色肉垫，内嵌 SVG）；有未读提醒时显示小红点 -->
+    <button id="assistant-btn" class="assistant-btn" data-act="assistant-open" aria-label="小猫助手">
+      <svg viewBox="0 0 32 32" aria-hidden="true">
+        <g fill="#5DCAA5"><circle cx="8" cy="13" r="3.9"/><circle cx="13.3" cy="7.6" r="3.9"/><circle cx="18.7" cy="7.6" r="3.9"/><circle cx="24" cy="13" r="3.9"/>
+          <path d="M16 13.5c4.6 0 9 4.6 9 8.6 0 3.2-2.4 4.6-4.8 4.1-1.6-.3-2.6-.9-4.2-.9s-2.6.6-4.2.9C9.4 26.7 7 25.3 7 22.1c0-4 4.4-8.6 9-8.6z"/></g>
+        <g fill="#F4A6B8"><circle cx="8" cy="13.3" r="2"/><circle cx="13.3" cy="7.9" r="2"/><circle cx="18.7" cy="7.9" r="2"/><circle cx="24" cy="13.3" r="2"/>
+          <ellipse cx="16" cy="20.8" rx="4.6" ry="3.4"/></g>
+      </svg>
+      <span id="assistant-dot" class="reddot" hidden></span>
+    </button>
+    <h1 id="page-title">账目</h1>
+    <span class="topbar-right"></span>
+  </header>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <!-- 小猫助手对话窗口（全屏覆盖层，spec 7A.5）：上面是最近 30 天的提醒和夸奖，下面是问题按钮；没有输入框 -->
+  <div id="assistant-overlay" class="aov" role="dialog" aria-modal="true" aria-labelledby="aov-title" hidden>
+    <header class="aov-head">
+      <button class="aov-back" data-act="assistant-close" aria-label="返回">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <h1 id="aov-title">小猫助手</h1>
+      <span class="aov-side"></span>
+    </header>
+    <div class="aov-list" id="aov-list" aria-live="polite"></div>
+    <div class="aov-qs" id="aov-qs" role="group" aria-label="可以问我"></div>
+  </div>
+
+  <main>
+    <section id="page-entries" class="page"></section>
+    <section id="page-form" class="page" hidden></section>
+    <section id="page-report" class="page" hidden></section>
+    <section id="page-budget" class="page" hidden></section>
+    <section id="page-settings" class="page" hidden></section>
+  </main>
+
+  <!-- 底部导航：账目 / 报表 / 记一笔（居中凸起）/ 预算 / 我的。图标都是内嵌 SVG，不依赖外部资源 -->
+  <nav class="bottomnav" aria-label="主导航">
+    <span class="navpill" id="navpill" aria-hidden="true"></span>
+    <button class="navitem active" data-nav="entries">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3.5" width="16" height="17" rx="3"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
+      <span>账目</span>
+    </button>
+    <button class="navitem" data-nav="report">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5a8.5 8.5 0 1 0 8.5 8.5H12z"/><path d="M15 3.8A8.5 8.5 0 0 1 20.2 9H15z"/></svg>
+      <span>报表</span>
+    </button>
+    <button class="navitem navadd" data-nav="form" aria-label="记一笔">
+      <span class="plus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></span>
+      <span>记一笔</span>
+    </button>
+    <button class="navitem" data-nav="budget">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="14" rx="3.5"/><path d="M16 13h2M3 10h18M7 6l8-3 1.5 3"/></svg>
+      <span>预算</span>
+    </button>
+    <button class="navitem" data-nav="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8.5" r="3.7"/><path d="M5 20c.8-3.6 3.6-5.4 7-5.4s6.2 1.8 7 5.4"/></svg>
+      <span>我的</span>
+    </button>
+  </nav>
+
+  <?!= include('ui/i18n.js') ?>
+  <?!= include('ui/i18n-en.js') ?>
+  <?!= include('ui/app.js') ?>
+</body>
+</html>

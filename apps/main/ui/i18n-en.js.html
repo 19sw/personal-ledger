@@ -1,0 +1,420 @@
+<script>
+/**
+ * 英文对照表（spec 8A）。规则见 ui/i18n.js.html：
+ * - E：整句（键去掉首尾空白）；T：模板，数字/金额/日期/百分比写成 {0}{1}…；P：含用户内容的正则。
+ * - 拼起来的句子（如“支出：餐饮 $12.00，购物 $8.00”）会按标点逐段查 E，所以常用词和标点也在 E 里。
+ * 新增中文界面文字时，在这里补上英文；tests/i18n.test.js 会找出漏翻的地方。
+ */
+(function (I) {
+  var E = I.EXACT, T = I.TEMPLATES, P = I.PATTERNS, pl = I.plural, mo = I.month, MON = I.MON;
+  function n(x, one, many) { return x + ' ' + pl(x, one, many); }
+  function entries(x) { return n(x, 'entry', 'entries'); }
+  function days(x) { return n(x, 'day', 'days'); }
+  function emails(x) { return n(x, 'email', 'emails'); }
+  function md(m, d) { return MON[(+m - 1) % 12] + ' ' + (+d); }
+  function add(map, obj) { Object.keys(obj).forEach(function (k) { map[k] = obj[k]; }); }
+  /** 类别名等用户内容：内置的翻译，自建的原样 */
+  function name(s) { return Object.prototype.hasOwnProperty.call(E, s) ? E[s] : s; }
+
+  // ---------- 标点（拼接句子逐段翻译时用） ----------
+  add(E, { '，': ', ', '、': ', ', '：': ': ', '。': '. ', '；': '; ', '！': '! ', '？': '? ', '（': ' (', '）': ')', '“': '"', '”': '"', '～': '~', '／': ' / ' });
+
+  // ---------- 导航与通用 ----------
+  add(E, {
+    '记账': 'Ledger', '账目': 'Entries', '记一笔': 'Add', '报表': 'Reports', '预算': 'Budget', '我的': 'Me', '编辑': 'Edit',
+    '主导航': 'Main navigation', '小猫助手': 'Cat Assistant', '返回': 'Back', '可以问我': 'Ask me',
+    '上个月': 'Previous month', '下个月': 'Next month', '上一年': 'Previous year', '下一年': 'Next year',
+    '支出': 'Expense', '收入': 'Income', '结余': 'Balance', '本月': 'This month', '这个月': 'This month',
+    '完成': 'Done', '取消': 'Cancel', '关闭': 'Close', '添加': 'Add', '+ 添加': '+ Add', '删除': 'Delete', '修改': 'Edit',
+    '恢复': 'Restore', '停用': 'Disable', '清空': 'Clear', '退格': 'Backspace', '刷新': 'Refresh', '收起': 'Collapse',
+    '重新读取': 'Reload', '加载中…': 'Loading…', '已保存': 'Saved', '已添加': 'Added', '已删除': 'Deleted', '已恢复': 'Restored',
+    '保存失败，请重试': 'Save failed. Please try again.', '出错了，请稍后再试': 'Something went wrong. Please try again later.', '出错了': 'Something went wrong',
+    '系统正忙，请稍后再试': 'The system is busy. Please try again later.', '暂时连不上账本': 'Cannot reach the ledger right now',
+    '今天': 'Today', '天': 'days', '笔': 'entries', '封': 'emails', '项': 'items', '月份': 'Month', '年份': 'Year',
+    '手动': 'Manual', '外卖': 'Delivery', '邮件': 'Email', '商家': 'Merchant', '来源': 'Source', '退款': 'Refund', '原交易': 'Original transaction',
+    '还没有': 'None yet', '语言': 'Language', '音效': 'Sound effects',
+    '一': 'Mo', '二': 'Tu', '三': 'We', '四': 'Th', '五': 'Fr', '六': 'Sa', '日': 'Su'
+  });
+
+  // ---------- 账目页 ----------
+  add(E, {
+    '没有需要处理的记录': 'Nothing needs attention', '本月还没有记录': 'No entries this month yet', '下一个月份 ›': 'Next month ›',
+    '可能重复': 'Possible duplicate', '待核对金额': 'Check amount', '待补全': 'Missing amount', '待核对重复': 'Possible duplicate', '正常': 'OK',
+    '无法识别金额，需要用户自行查看': 'Amount unknown',
+    '（点击显示全部）': '(tap to show all)', '（点击只看这些）': '(tap to show only these)',
+    '这一年还没有可显示的月份': 'No months to show for this year yet', '还没有账目': 'No entries yet', '没有支出': 'No expenses', '没有收入': 'No income',
+    '未指定来源': 'Unspecified source', '未知类别': 'Unknown category'
+  });
+  add(T, {
+    '统计不完整：有 {0} 笔金额未补全': function (a) { return 'Totals incomplete: ' + entries(a[0]) + ' missing an amount'; },
+    '本月有 {0} 笔待补全、{1} 笔待核对（点击显示全部）': function (a) { return 'This month: ' + a[0] + ' missing, ' + a[1] + ' to check (tap to show all)'; },
+    '本月有 {0} 笔待补全、{1} 笔待核对（点击只看这些）': function (a) { return 'This month: ' + a[0] + ' missing, ' + a[1] + ' to check (tap to show only these)'; },
+    '这个月有 {0} 笔待补全、{1} 笔待核对（点击显示全部）': function (a) { return 'This month: ' + a[0] + ' missing, ' + a[1] + ' to check (tap to show all)'; },
+    '这个月有 {0} 笔待补全、{1} 笔待核对（点击只看这些）': function (a) { return 'This month: ' + a[0] + ' missing, ' + a[1] + ' to check (tap to show only these)'; },
+    '其他月份还有 {0} 笔': function (a) { return entries(a[0]) + ' in other months'; },
+    '支出 {0}': 'Spent {0}', '收入 {0}': 'Earned {0}',
+    '{0} 年 {1} 月': function (a) { return mo(a[1]) + ' ' + a[0]; },
+    '{0} 年': '{0}', '{0} 月': function (a) { return MON[(+a[0] - 1) % 12]; },
+    '{0} 月 {1} 日': function (a) { return md(a[0], a[1]); },
+    '{0} 月 {1} 日 {2}': function (a) { return md(a[0], a[1]) + ' ' + a[2]; },
+    '今天 {0}': 'Today {0}', '{0} 笔': function (a) { return entries(a[0]); }, '{0} 天': function (a) { return days(a[0]); }
+  });
+
+  // ---------- 记一笔 ----------
+  add(E, {
+    '填写金额': 'Enter amount', '重新选择类别': 'Choose another category', '备注（可不填）': 'Note (optional)', '新类别名称': 'New category name',
+    '例如：健身': 'e.g. Gym', '选择类别': 'Choose a category', '先填金额': 'Enter an amount first', '没保存成功，再试一次': 'Not saved. Please try again.',
+    '已记好': 'Saved', '恢复这笔账目': 'Restore this entry', '删除这笔账目': 'Delete this entry', '这笔账目已删除': 'This entry has been deleted',
+    '无法识别金额，需要用户自行查看收据后补填': 'Amount not recognized — check the receipt and fill it in',
+    '可能与另一个渠道记下的一笔重复（金额相同、时间接近）。确认是两笔不同的消费，请点“两笔都保留”；': 'This may duplicate an entry from another channel (same amount, similar time). If they are two different purchases, tap "Keep both";',
+    '如果是同一笔，请删除其中一笔。': 'if they are the same purchase, delete one of them.', '两笔都保留': 'Keep both', '已保留，两笔都计入': 'Kept — both entries count',
+    '记录渠道：': 'Recorded via: ', '（自动记录，渠道不可修改）': '(automatic — channel cannot be changed)',
+    '商家：': 'Merchant: ', '来源：': 'Source: ', '这是退款': 'This is a refund', '不是退款': 'Not a refund',
+    '日期时间（费城时间）': 'Date & time (Philadelphia time)', '商家／说明': 'Merchant / description', '不关联原交易': 'Not linked to an original transaction',
+    '关联的原交易': 'Original transaction', '不填': 'None', '＋ 新建来源…': '+ New source…', '具体来源': 'Source', '新来源名称': 'New source name',
+    '例如：兼职 C': 'e.g. Part-time C', '例如：兼职 A': 'e.g. Part-time A', '来自待查看邮件': 'From an email to review',
+    '确定删除这笔账目？30 天内可在“我的 → 最近删除”中恢复。': 'Delete this entry? You can restore it from "Me → Recently deleted" within 30 days.',
+    '已有同名类别': 'A category with this name already exists', '支出类别': 'Expense categories', '收入类别': 'Income categories', '系统类别': 'System category',
+    '删除这个类别？已有账目和月报不受影响。': 'Delete this category? Existing entries and reports are not affected.'
+  });
+  E['可能与另一个渠道记下的一笔重复（金额相同、时间接近）。确认是两笔不同的消费，请点“两笔都保留”；如果是同一笔，请删除其中一笔。'] =
+    'This may duplicate an entry from another channel (same amount, similar time). If they are two different purchases, tap "Keep both"; if they are the same purchase, delete one of them.';
+  P.push([/^商家：(.*)$/, function (m) { return 'Merchant: ' + m[1]; }]);
+  P.push([/^来源：(.*)$/, function (m) { return 'Source: ' + name(m[1]); }]);
+  P.push([/^记录渠道：(.+?)（自动记录，渠道不可修改）$/, function (m) { return 'Recorded via: ' + name(m[1]) + ' (automatic — channel cannot be changed)'; }]);
+  P.push([/^记录渠道：(.+)$/, function (m) { return 'Recorded via: ' + name(m[1]); }]);
+  P.push([/^(.+?)。请重试确认同一笔存入，确认后再记录新的一笔。$/, function (m, tr) { var x = tr(m[1]); return (x === null ? m[1] : x).replace(/\.$/, '') + '. Retry confirming the same deposit before adding a new one.'; }]);
+  add(T, { '{0} 已记好': '{0} saved', '其余 {0} 项': function (a) { return 'Other ' + n(a[0], 'item', 'items'); } });
+
+  // ---------- 报表 / 月报 / 账单 ----------
+  add(E, {
+    '月报': 'Monthly', '账单': 'Bills', '储蓄': 'Savings', '消费习惯': 'Habits', '本月进行中': 'Month in progress',
+    '总支出': 'Total expenses', '总收入': 'Total income', '收支对比': 'Income vs. expenses', '结余（收入 − 支出）': 'Balance (income − expenses)',
+    '本月预算小结': 'Budget summary this month', '已用': 'Used', '超出': 'Over', '剩余': 'Left', '（净退款）': '(net refund)',
+    '展开来源': 'Show sources', '收起来源': 'Hide sources', '月账单': 'Monthly bills', '年账单': 'Yearly bills',
+    '年结余': 'Year balance', '年收入': 'Year income', '年支出': 'Year expenses', '总结余': 'Total balance', '支出：': 'Expenses: ', '收入：': 'Income: '
+  });
+  add(T, {
+    '生成于 {0} 月 {1} 日': function (a) { return 'Generated ' + md(a[0], a[1]); },
+    '生成于 {0} 月 {1} 日，最后更新于 {2} {3}': function (a) { return 'Generated ' + md(a[0], a[1]) + ', last updated ' + a[2] + ' ' + a[3]; },
+    '本月进行中，最后更新于 {0} {1}': 'Month in progress, last updated {0} {1}',
+    '有 {0} 笔金额未补全，以下统计不完整（点击前往补全）': function (a) { return entries(a[0]) + ' missing an amount — totals below are incomplete (tap to fill in)'; },
+    '有 {0} 笔金额未补全，统计不完整': function (a) { return entries(a[0]) + ' missing an amount — totals are incomplete'; },
+    '收支对比：收入 {0}，支出 {1}，结余 {2}': 'Income vs. expenses: income {0}, expenses {1}, balance {2}',
+    '{0} 月预算小结': function (a) { return mo(a[0]) + ' budget summary'; },
+    '已用 {0} / {1}': 'Used {0} / {1}', '剩余 {0}': '{0} left', '超出 {0}': '{0} over',
+    '有 {0} 笔未补全，预算统计不完整': function (a) { return entries(a[0]) + ' missing an amount — budget totals are incomplete'; },
+    '年账单为自然年（{0}–{1}），按费城时间': 'Yearly bills use calendar years (Jan 1–Dec 31), Philadelphia time'
+  });
+
+  // ---------- 消费习惯 ----------
+  add(E, {
+    '正在读取消费习惯…': 'Loading spending habits…', '暂时无法读取消费习惯': 'Cannot load spending habits right now', '本月与上月同期': 'This month vs. same period last month',
+    '类别同期对比，可横向滚动': 'Category comparison, scrolls horizontally', '消费类别': 'Category', '本月同期': 'This month', '上月同期': 'Last month', '金额变化': 'Change',
+    '这两个区间还没有已知金额的消费。': 'No spending with known amounts in these two periods yet.',
+    '按自然月展示，退款抵扣原消费类别。没有已知金额记录的月份显示 —。': 'Shown by calendar month; refunds offset their category. Months with no known amounts show —.',
+    '三个月类别变化，可横向滚动': 'Three-month category trend, scrolls horizontally'
+  });
+  add(T, {
+    '{0} 至 {1}': '{0} to {1}', '{0} 至 {1}（上月天数不足时取月末）': '{0} to {1} (uses month end when last month is shorter)',
+    '比较区间有 {0} 笔支出金额未补全，比较不完整。': function (a) { return entries(a[0]) + ' in these periods ' + pl(a[0], 'is', 'are') + ' missing an amount, so the comparison is incomplete.'; },
+    '最近 {0} 个完整月 · 类别变化': 'Last {0} full months · category trend',
+    '这 {0} 个月有 {1} 笔账目金额未补全，趋势不完整。': function (a) { return entries(a[1]) + ' in these ' + a[0] + ' months ' + pl(a[1], 'is', 'are') + ' missing an amount, so the trend is incomplete.'; },
+    '最近 {0} 个完整月还没有已知金额的消费，记账后会在这里积累变化。': 'No spending with known amounts in the last {0} full months yet. Trends will build up here as you record entries.'
+  });
+
+  // ---------- 储蓄 ----------
+  add(E, {
+    '正在读取储蓄计划…': 'Loading savings plan…', '暂时无法读取储蓄计划': 'Cannot load the savings plan right now',
+    '储蓄功能还没有启用：请先在脚本编辑器里重新运行一次 setupLedger，再回来设置。': 'Savings is not set up yet: run setupLedger once in the script editor, then come back.',
+    '储蓄功能还没有启用：请先在脚本编辑器里重新运行一次 setupLedger，再回来设置': 'Savings is not set up yet: run setupLedger once in the script editor, then come back',
+    '我已设置，重新读取': 'Done — reload', '月底可用金额 · 账本估算': 'Available at month end · ledger estimate',
+    '按账本记录估算全月收支，再预留所有进行中目标的月度存款。实际可用金额请以自己的资金情况为准。': 'Estimates the full month from your ledger, then sets aside the monthly savings for all active goals. Check your actual funds before relying on it.',
+    '预计月收入': 'Expected monthly income', '预计月支出': 'Expected monthly expenses', '全部目标月度存款': 'Monthly savings for all goals',
+    '收入依据：本月手动预估。': 'Income basis: your manual estimate for this month.', '收入依据：请先填写月度预估。': 'Income basis: please enter a monthly estimate first.',
+    '支出依据：本月手动预估；与本月已记支出比较后取较大值。': 'Expense basis: your manual estimate for this month; the larger of it and recorded spending is used.',
+    '支出依据：请先填写月度预估；与本月已记支出比较后取较大值。': 'Expense basis: please enter a monthly estimate first; the larger of it and recorded spending is used.',
+    '本月手动预估': 'your manual estimate for this month', '请先填写月度预估': 'please enter a monthly estimate first',
+    '填写 / 调整本月预估': 'Enter / adjust this month\'s estimate', '预计本月总收入（美元）': 'Expected total income this month (USD)', '预计本月总支出（美元）': 'Expected total expenses this month (USD)',
+    '支出已有完整月历史，使用历史平均与本月已记支出中的较大值。': 'Full-month spending history exists, so the larger of the historical average and this month\'s recorded spending is used.',
+    '保存本月预估': 'Save this month\'s estimate', '我的储蓄目标': 'My savings goals', '新建目标': 'New goal', '编辑目标': 'Edit goal', '保存目标': 'Save goal',
+    '上一笔存入结果尚未确认。': 'The last deposit has not been confirmed yet.', '继续确认这笔存入': 'Continue confirming this deposit',
+    '还没有储蓄目标。为旅行、应急金或想买的东西，分别建立计划吧。': 'No savings goals yet. Create a plan for a trip, an emergency fund or something you want to buy.',
+    '存入记录独立保存，不计入日常消费。': 'Deposits are kept separately and do not count as everyday spending.',
+    '目标已完成，继续存入仍会更新已存金额。': 'Goal reached — further deposits still update the saved amount.', '（已过期）': '(overdue)',
+    '当前月计划可能无法按期完成，可调整月存款或目标日期。': 'The current monthly plan may not finish on time; adjust the monthly amount or target date.',
+    '已完成': 'Completed', '进行中': 'In progress', '记录存入': 'Add deposit', '上一笔存入结果待确认，请先重试确认': 'The last deposit is unconfirmed — retry the confirmation first',
+    '目标名称（必填）': 'Goal name (required)', '目标总额（美元）（必填）': 'Goal amount (USD) (required)', '目标总额（美元）': 'Goal amount (USD)',
+    '开始时已存金额（美元）（必填）': 'Already saved at start (USD) (required)', '开始时已存金额（美元）': 'Already saved at start (USD)',
+    '（必填）': ' (required)', '希望完成的日期（选填）': 'Target date (optional)', '每月计划存款（美元）': 'Planned monthly saving (USD)',
+    '只更新这个目标的进度，不计入日常消费。': 'Only updates this goal\'s progress; not counted as everyday spending.',
+    '本次存入（美元，必填）': 'Deposit amount (USD, required)', '存入日期（费城时间）': 'Deposit date (Philadelphia time)',
+    '上一笔存入的结果尚未确认。重试会使用同一笔记录，不会重复累计。确认后才可记录新的一笔。': 'The last deposit has not been confirmed. Retrying reuses the same record, so it will not be counted twice. Confirm it before adding a new one.',
+    '重试确认这笔存入': 'Retry confirming this deposit', '确认存入': 'Confirm deposit', '去调整目标': 'Adjust goals',
+    '请填写大于 0 的金额，最多两位小数，例如 12.34': 'Enter an amount greater than 0 with up to two decimals, e.g. 12.34',
+    '存入金额请填写大于 0 的金额，例如 12.34': 'Deposit amount must be greater than 0, e.g. 12.34',
+    '请填写每月计划存入的金额': 'Enter the planned monthly saving', '预计每月可存': 'Expected monthly savings capacity', '超出预计可存金额': 'Over expected savings capacity',
+    '应急金': 'Emergency fund', '电脑': 'Computer'
+  });
+  add(T, {
+    '{0} 年 {1} 月 · 截至 {2}': function (a) { return mo(a[1]) + ' ' + a[0] + ' · as of ' + a[2]; },
+    '收入依据：最近 {0} 个完整月中，有数据的 {1} 个月平均。': function (a) { return 'Income basis: average of ' + n(a[1], 'month', 'months') + ' with data in the last ' + a[0] + ' full months.'; },
+    '支出依据：最近 {0} 个完整月中，有数据的 {1} 个月平均；与本月已记支出比较后取较大值。': function (a) { return 'Expense basis: average of ' + n(a[1], 'month', 'months') + ' with data in the last ' + a[0] + ' full months; the larger of it and recorded spending is used.'; },
+    '本月已记收入 {0}，支出 {1}。已完成目标不再预留月度存款。': 'Recorded this month: income {0}, expenses {1}. Completed goals no longer reserve monthly savings.',
+    '最近 {0} 个完整月中，有数据的 {1} 个月平均': function (a) { return 'Average of ' + n(a[1], 'month', 'months') + ' with data in the last ' + a[0] + ' full months'; },
+    '还缺少月收入预估和月支出预估，填写后再计算。{0} 表示确实没有，留空表示未知。': 'Monthly income and expense estimates are missing; fill them in to calculate. {0} means none; blank means unknown.',
+    '还缺少月收入预估，填写后再计算。{0} 表示确实没有，留空表示未知。': 'The monthly income estimate is missing; fill it in to calculate. {0} means none; blank means unknown.',
+    '还缺少月支出预估，填写后再计算。{0} 表示确实没有，留空表示未知。': 'The monthly expense estimate is missing; fill it in to calculate. {0} means none; blank means unknown.',
+    '有 {0} 笔相关账目金额未补全，估算不完整。': function (a) { return entries(a[0]) + ' involved ' + pl(a[0], 'is', 'are') + ' missing an amount, so the estimate is incomplete.'; },
+    '预计支出已超过收入 {0}，可存金额及月底可用金额按 {1} 显示。': 'Expected expenses exceed income by {0}; savings capacity and month-end amount are shown as {1}.',
+    '填写后优先采用；清空则恢复历史依据，没有历史时需重新预估。{0} 可用。': 'Used first when filled in; clear it to go back to history (if there is none, estimate again). {0} is allowed.',
+    '没有完整月支出历史时使用；清空表示未知。{0} 可用。': 'Used when there is no full-month spending history; blank means unknown. {0} is allowed.',
+    '目标日期 {0}': 'Target date {0}', '目标日期 {0}（已过期）': 'Target date {0} (overdue)',
+    '目标日期 {0} · 建议每月存 {1}': 'Target date {0} · suggested {1}/month',
+    '按当前计划，还需约 {0} 个月，预计 {1} 达成。': function (a) { return 'At the current plan, about ' + n(a[0], 'month', 'months') + ' to go — expected by ' + a[1] + '.'; },
+    '已存 {0} / {1}': 'Saved {0} / {1}', '{0} · 每月计划 {1}': '{0} · plan {1}/month',
+    '存入记录（{0} 笔）': function (a) { return 'Deposits (' + a[0] + ')'; },
+    '仅修改开始时的余额；另外记录的 {0} 存入会继续累计。': 'Only changes the starting balance; the {0} recorded separately keeps adding up.',
+    '还没有存款请填写 {0}。': 'Enter {0} if nothing is saved yet.',
+    '填了日期时可留空，保存后按剩余金额和月份建议月存款；没有日期时，未完成的目标需要填写大于 {0} 的月存款。': 'Can be left blank when a date is set — a monthly amount is suggested from the remaining amount and months. Without a date, an unfinished goal needs a monthly amount greater than {0}.',
+    '。请重试确认同一笔存入，确认后再记录新的一笔。': '. Retry confirming the same deposit before adding a new one.'
+  });
+  P.push([/^存入：(.+)$/, function (m) { return 'Deposit: ' + m[1]; }]);
+  P.push([/^(.+)储蓄进度$/, function (m) { return name(m[1]) + ' savings progress'; }]);
+
+  // ---------- 预算 ----------
+  add(E, {
+    '预算功能还没有启用：请先在脚本编辑器里重新运行一次 setupLedger（只需一次）。': 'Budgets are not set up yet: run setupLedger once in the script editor.',
+    '预算功能还没有启用：请先在脚本编辑器里重新运行一次 setupLedger（只需一次），再回来设置': 'Budgets are not set up yet: run setupLedger once in the script editor, then come back',
+    '还没到这个月': 'This month has not started yet', '过去的月份只能查看当时的预算': 'Past months show the budget they had',
+    '过去的月份只能查看当时的预算。修改预算请回到本月，从本月起生效。': 'Past months show the budget they had. To change a budget, go back to this month; changes apply from this month.',
+    '还没到这个月。修改预算请回到本月，从本月起生效。': 'This month has not started yet. To change a budget, go back to this month; changes apply from this month.',
+    '超出预算': 'Over budget', '剩余预算': 'Budget left', '本月预算': 'This month\'s budget', '本月支出': 'Spent this month', '今天是本月最后一天': 'Today is the last day of the month',
+    '还没有总预算': 'No total budget yet', '还没有设置总预算': 'No total budget set',
+    '设一个每月总预算，花了多少、还剩多少一眼就能看到；以后每个月自动沿用，不用重填。': 'Set a monthly total budget to see at a glance how much you have spent and how much is left. It carries over every month automatically.',
+    '设置总预算': 'Set total budget', '类别预算': 'Category budgets', '还没有类别预算。没设预算的类别只计入总预算。': 'No category budgets yet. Categories without a budget only count toward the total budget.',
+    '这个月没有类别预算。': 'No category budgets this month.', '总预算': 'Total budget', '给哪个类别设预算？': 'Which category needs a budget?',
+    '每月预算，从本月起生效，以后每月自动沿用。': 'Monthly budget — applies from this month and carries over every month.',
+    '清空金额后点“完成”= 从本月起取消这项预算。': 'Clear the amount and tap "Done" to cancel this budget from this month.',
+    '取消这项预算': 'Cancel this budget', '已取消预算': 'Budget cancelled', '各类别预算都在范围内': 'All category budgets are within range',
+    '（只是提醒，不影响保存）': '(just a reminder — saving is not affected)'
+  });
+  add(T, {
+    '{0} 月总预算': function (a) { return mo(a[0]) + ' total budget'; }, '{0} 月预算': function (a) { return mo(a[0]) + ' budget'; },
+    '{0} 月支出': function (a) { return mo(a[0]) + ' spending'; }, '本月还剩 {0} 天': function (a) { return days(a[0]) + ' left this month'; },
+    '总预算 {0}，已用 {1}，剩余 {2}': 'Total budget {0}, {1} used, {2} left', '总预算 {0}，已用 {1}，超出 {2}': 'Total budget {0}, {1} used, {2} over',
+    '这个月没有设置总预算（{0} 月支出 {1}）': function (a) { return 'No total budget this month (' + mo(a[0]) + ' spending ' + a[1] + ')'; },
+    '类别预算合计 {0}，高于总预算 {1}（只是提醒，不影响保存）': 'Category budgets add up to {0}, more than the total budget {1} (just a reminder — saving is not affected)',
+    '类别预算合计 {0}，高于总预算 {1}': 'Category budgets add up to {0}, more than the total budget {1}',
+  });
+  P.push([/^从本月起取消“(.+)”的预算？过去月份不受影响。$/, function (m) { return 'Cancel the budget for "' + name(m[1]) + '" from this month? Past months are not affected.'; }]);
+  P.push([/^总预算剩余 (\S+)，(.+)超出 (\S+)。$/, function (m) { return 'Total budget: ' + m[1] + ' left; ' + name(m[2]) + ' is ' + m[3] + ' over.'; }]);
+
+  // ---------- 我的 ----------
+  add(E, {
+    '我的小账本': 'My little ledger', '连续打卡': 'Streak', '累计打卡': 'Total check-ins', '记下第一笔账，就完成第一次打卡啦': 'Record your first entry to check in for the first time',
+    '今天已打卡 ✓': 'Checked in today ✓', '今天还没记账哦': 'No entries today yet', '去记一笔': 'Add one',
+    '打卡功能还没有启用：请在脚本编辑器里重新运行一次 setupLedger（只需一次）。': 'Check-ins are not set up yet: run setupLedger once in the script editor.',
+    '类别管理': 'Categories', '收入来源': 'Income sources', '预算提醒比例': 'Budget alert level', '最近删除': 'Recently deleted',
+    'Apple Pay 自动记账': 'Apple Pay auto-recording', '外卖收据自动记账': 'Email receipt auto-recording',
+    '接近预算的比例': 'Alert when budget used reaches', '没有已删除的账目': 'No deleted entries',
+    '未开启': 'Off', '需要注意': 'Needs attention', '还没有开启': 'Not turned on yet', '运行状态': 'Status',
+    '查看 Apple Pay 状态 ›': 'View Apple Pay status ›', '查看外卖收据状态 ›': 'View email receipt status ›',
+    '开启后，在实体店用 iPhone 刷 Apple Pay，快捷指令会把金额和商家自动记成一笔“Apple Pay”支出（类别“未分类”，之后可以改）。开启需要你本人按设置说明操作；没开启也不影响手动记账。':
+      'Once turned on, when you pay with Apple Pay on your iPhone in a store, a Shortcut records the amount and merchant as an "Apple Pay" expense (category "Uncategorized", which you can change later). You turn it on yourself by following the setup guide; manual entries work either way.',
+    '最近一次整理': 'Last processed', '最近一次成功': 'Last success', '最近一次入账': 'Last entry', '最近一次读取': 'Last read',
+    '状态和限流提醒还没有启用：请在脚本编辑器里重新运行一次 setupLedger（只需一次）。': 'Status and rate-limit alerts are not set up yet: run setupLedger once in the script editor.',
+    '超出上限被拒收': 'Rejected over the limit', '状态暂时读不出来，稍后再看。': 'Status cannot be read right now. Check again later.',
+    '各平台': 'Platforms', '还没有自动入账': 'No automatic entries yet', '待查看邮件': 'Emails to review',
+    '名单外像收据的邮件不会自动记账。你可以在 Gmail 中查看后，选择“记这一笔”、选类别加入名单并“以后自动记”、静音这个商家，或只把这封标为“已查看”。静音商家后，它的待查看邮件会隐藏。':
+      'Receipt-like emails from senders not on your list are not recorded automatically. After checking one in Gmail, you can "Record this one", pick a category and "Always record", mute the sender, or just mark it "Reviewed". Muting a sender hides its emails here.',
+    '选择自动记账类别': 'Category for automatic recording', '未读到金额': 'Amount not found', '在 Gmail 中打开': 'Open in Gmail',
+    '记这一笔': 'Record this one', '以后自动记': 'Always record', '不再提醒这个商家': 'Mute this sender', '已查看': 'Reviewed', '没有待查看的邮件': 'No emails to review',
+    '已隐藏这个商家': 'Sender muted', '已加入自动名单并记下这笔': 'Added to the list and recorded', '找不到这封邮件，请刷新后再试': 'Email not found. Please refresh and try again.',
+    '未验证': 'Not verified', '已支持': 'Supported', '部分支持': 'Partly supported', '未支持': 'Not supported', '已关闭': 'Turned off',
+    '外卖收据自动记账：Gmail 授权失效或被撤销（如需继续，请在脚本编辑器里运行一次 enableReceiptPolling 并按提示授权）': 'Email receipts: Gmail access expired or was revoked (to continue, run enableReceiptPolling once in the script editor and approve access)',
+    'Gmail 授权失效或被撤销（如需继续，请在脚本编辑器里运行一次 enableReceiptPolling 并按提示授权）': 'Gmail access expired or was revoked (to continue, run enableReceiptPolling once in the script editor and approve access)',
+    'Gmail 读取额度暂时用完，之后会自动再试': 'Gmail read quota used up for now; it will retry automatically', '读取 Gmail 时出错，下次会再试': 'Error reading Gmail; it will retry next time',
+    '没有启用高级 Gmail 服务（请按设置说明重新上传代码）': 'Advanced Gmail service is not enabled (re-upload the code following the setup guide)',
+    '需要先在脚本编辑器里重新运行一次 setupLedger': 'Run setupLedger once in the script editor first',
+    '外卖收据自动记账需要先在脚本编辑器里重新运行一次 setupLedger': 'Email receipts need setupLedger to be run once in the script editor first',
+    '有邮件处理失败，下次会再试': 'Some emails failed to process; they will be retried next time',
+    '有邮件同时像多个平台（已列入待查看邮件）': 'An email looked like several platforms (added to emails to review)',
+    '有邮件看不出是不是外卖消费（已列入待查看邮件）': 'An email could not be identified as a purchase (added to emails to review)',
+    '有收件行整理失败，下次会再试': 'Some inbox rows failed to process; they will be retried next time', '整理收件箱时出错，下次会再试': 'Error processing the inbox; it will retry next time',
+    '打不开「收件箱」表格（检查脚本属性 INBOX_SPREADSHEET_ID 和表格是否还在）': 'Cannot open the Inbox spreadsheet (check the INBOX_SPREADSHEET_ID script property and that the spreadsheet still exists)',
+    '「收件箱」里没有 inbox 工作表（请在收件口项目中运行 setupInbox）': 'The Inbox spreadsheet has no inbox sheet (run setupInbox in the inbox project)',
+    '「收件箱」inbox 工作表的表头不对（请不要手动修改这张表）': 'The inbox sheet header is wrong (please do not edit this sheet by hand)',
+    '找不到“未分类”类别（请重新运行 setupLedger）': 'The "Uncategorized" category is missing (run setupLedger again)'
+  });
+  add(T, {
+    '已陪你记账 {0} 天': function (a) { return 'Keeping your books for ' + days(a[0]); },
+    '再打卡 {0} 天，就到 {1} 天里程碑啦': function (a) { return days(a[0]) + ' more to reach the ' + a[1] + '-day milestone'; },
+    '{0} 封待查看': function (a) { return a[0] + ' to review'; }, '{0} 封': function (a) { return emails(a[0]); },
+    '提醒比例已改为 {0}': 'Alert level changed to {0}',
+    '预算已用达到这个比例时，预算页的圆环和进度条变成橙色，小猫助手会提醒你；超过 {0} 变成红色。': 'When this share of a budget is used, its ring and bar turn orange and the Cat Assistant reminds you; above {0} they turn red.',
+    '删除的账目保留 {0} 天，之后自动清除；删除期间不计入任何统计。': 'Deleted entries are kept for {0} days, then removed automatically. They do not count in any totals meanwhile.',
+    '{0} 自动清除': 'Removed on {0}',
+    '打开记账网页时、以及每 {0} 分钟，会自动把新的 Apple Pay 付款整理成账目。': 'New Apple Pay payments are turned into entries when you open the app and every {0} minutes.',
+    '为防止口令泄露后被灌入假账，收件口每小时最多收 {0} 笔、每天最多 {1} 笔。被拒收的付款不会保存，请对照付款记录手动补记。': 'To prevent fake entries if the token leaks, the inbox accepts at most {0} payments per hour and {1} per day. Rejected payments are not saved — add them by hand from your payment history.',
+    '为防止口令泄露后被灌入假账，收件口每小时最多收 {0} 笔、每天最多 {1} 笔。': 'To prevent fake entries if the token leaks, the inbox accepts at most {0} payments per hour and {1} per day.',
+    '被拒收的付款不会保存，请对照付款记录手动补记。': 'Rejected payments are not saved — add them by hand from your payment history.',
+    '最近 {0} 天没有被拒收的付款': function (a) { return 'No rejected payments in the last ' + days(a[0]); },
+    '{0} 月 {1} 日 {2} 起': function (a) { return 'From ' + md(a[0], a[1]) + ' ' + a[2]; }, '拒收 {0} 笔': function (a) { return a[0] + ' rejected'; },
+    '收件箱有 {0} 笔超过 {1} 天还没整理成账目。收件箱的原始记录 {2} 天后会被清除，请尽快检查定时任务（installTriggers）。': function (a) { return entries(a[0]) + ' in the inbox ' + pl(a[0], 'has', 'have') + ' not been processed for over ' + a[1] + ' days. Inbox rows are removed after ' + a[2] + ' days — check the timed jobs (installTriggers) soon.'; },
+    'Apple Pay 收件箱有 {0} 笔超过 {1} 天还没整理成账目，{2} 天后会被清除，请到“我的 → Apple Pay 自动记账”查看': function (a) { return entries(a[0]) + ' in the Apple Pay inbox ' + pl(a[0], 'has', 'have') + ' not been processed for over ' + a[1] + ' days and will be removed after ' + a[2] + ' days. See "Me → Apple Pay auto-recording".'; },
+    '开启后，DoorDash 和 Uber Eats 收据会记为“餐饮”，Uber 打车收据会记为“交通”。名单以外像收据的邮件不会自动入账，会放进待查看。轮询每 {0} 分钟检查一次；已经通过核对、符合自动记账规则的名单邮件通常会在 Gmail 收到后约 {1} 分钟内记账。待查看邮件需要你自己处理。开启分两步，需要你本人在脚本编辑器里操作：先运行试运行 dryRunReceipts 核对识别结果，核对没问题后再运行 enableReceiptPolling。没开启也不影响手动记账。':
+      'Once turned on, DoorDash and Uber Eats receipts are recorded as "Dining" and Uber ride receipts as "Transport". Receipt-like emails from senders not on your list are not recorded automatically — they go to "Emails to review". Gmail is checked every {0} minutes; receipts that match the rules are usually recorded within about {1} minutes of arriving. You handle the emails to review yourself. Turning it on takes two steps in the script editor: run the dry run dryRunReceipts to check the results, then run enableReceiptPolling. Manual entries work either way.',
+    '每 {0} 分钟读取一次三个外卖平台的新邮件。只保存邮件编号、日期、金额和分类，不保存邮件内容。': 'New emails from the three platforms are read every {0} minutes. Only the email ID, date, amount and category are saved — never the email content.',
+    '最后入账 {0} 月 {1} 日 {2}（邮件到达后约 {3} 分钟）': function (a) { return 'Last entry ' + md(a[0], a[1]) + ' ' + a[2] + ' (about ' + n(a[3], 'minute', 'minutes') + ' after the email arrived)'; },
+    '最后入账 {0} 月 {1} 日 {2}': function (a) { return 'Last entry ' + md(a[0], a[1]) + ' ' + a[2]; },
+    '未识别邮件 {0} 封': function (a) { return 'Unrecognized emails: ' + a[0]; },
+    '{0} 月 {1} 日 {2} 收到 · {3}': function (a) { return 'Received ' + md(a[0], a[1]) + ' ' + a[2] + ' · ' + a[3]; },
+    '{0} 月 {1} 日 {2} 收到 · 未读到金额': function (a) { return 'Received ' + md(a[0], a[1]) + ' ' + a[2] + ' · amount not found'; },
+    '外卖收据自动记账可能已停止（超过 {0} 分钟没有运行），请到“我的 → 外卖收据自动记账”查看': 'Email receipt recording may have stopped (no run for over {0} minutes). See "Me → Email receipt auto-recording".',
+    '这一轮达到 {0} 封读取上限，剩余邮件将在下一轮继续': 'This run hit the {0}-email limit; the rest will be read next run',
+    '{0} 天内的平台邮件太多，超过了每轮翻页上限，可能有邮件没读到': 'Too many platform emails in the last {0} days — some may not have been read'
+  });
+  P.push([/^错误代码 (\S+)（(\d+) 月 (\d+) 日 (\d{1,2}:\d{2})）$/, function (m) { return 'Error code ' + m[1] + ' (' + md(m[2], m[3]) + ' ' + m[4] + ')'; }]);
+  P.push([/^出错：(.*)，代码 (\S+)$/, function (m, tr) { return 'Error: ' + (tr(m[1]) || m[1]) + ', code ' + m[2]; }]);
+  P.push([/^最近问题：(.*)$/, function (m, tr) { var x = tr(m[1]); return 'Latest issue: ' + (x === null ? m[1] : x); }]);
+  P.push([/^外卖收据自动记账：(.*)$/, function (m, tr) { var x = tr(m[1]); return x === null ? null : 'Email receipts: ' + x; }]);
+  P.push([/^Apple Pay 自动记账出错：(.*)$/, function (m, tr) { var x = tr(m[1]); return 'Apple Pay auto-recording error: ' + (x === null ? m[1] : x); }]);
+  P.push([/^Gmail（(.+)）$/, function (m) { return 'Gmail (' + m[1] + ')'; }]);
+
+  // ---------- 小猫助手 ----------
+  add(E, {
+    '去处理': 'Go fix', '生成交易表格': 'Create transaction report',
+    '小猫的提醒功能还没有启用：请在脚本编辑器里重新运行一次 setupLedger。下面的问题现在就能问我哦。': 'My reminders are not set up yet: run setupLedger in the script editor. You can still ask me the questions below.',
+    '喵～我是你的记账小猫。有预算提醒、夸奖和打卡好消息时会在这里告诉你，也可以点下面的问题问我。': 'Meow~ I\'m your bookkeeping cat. I\'ll post budget alerts, praise and check-in news here, and you can tap a question below to ask me.',
+    '选择报表的起止日期。系统会直接生成独立的收支明细文件，期初余额承接开始日期之前的已知账目余额（账本从 $0.00 开始累计）；如果你设置了预算，也会附上涉及月份的整月预算对比。':
+      'Choose the start and end dates. A separate transaction file is created; the opening balance carries over known entries before the start date (the ledger starts from $0.00). If you set budgets, a full-month budget comparison is added for each month.',
+    '开始日期': 'Start date', '结束日期': 'End date', '生成报表': 'Create report', '请检查报表的开始和结束日期': 'Please check the start and end dates',
+    '正在生成…': 'Creating…', '在 Google Sheets 打开': 'Open in Google Sheets', '下载 Excel 文件': 'Download Excel file',
+    '本月到今天的收支': 'Income and spending so far this month', '这个月还能花多少？': 'How much can I still spend this month?',
+    '哪个类别花得最多？': 'Which category costs the most?', '跟上个月同期比怎么样？': 'How does it compare with last month?',
+    '还有几笔没补全／待核对？': 'How many entries need fixing or checking?',
+    '（预览示例）': '(preview sample)', '没有这个问题': 'Unknown question',
+    '每日平均预算': 'Daily budget', '目前日均支出': 'Daily spending so far', '照这个速度月底约': 'Month-end at this pace',
+    'Apple Pay 自动记账刚才太频繁被暂停了一会儿，可能有交易没记上，记得核对一下哦': 'Apple Pay recording was paused briefly for too many payments, so some may be missing — please check.',
+    '喵～第一次打卡成功！从今天起，我陪你一起记账。': 'Meow~ First check-in done! From today on, I\'ll keep your books with you.',
+    '本月还没有设置预算，可以在“预算”页设置一个每月总预算哦。': 'No budget this month yet — you can set a monthly total budget on the "Budget" page.',
+    '本月还没有支出记录。': 'No spending recorded this month yet.', '没有待补全或待核对的账目，账本很整齐！': 'Nothing missing or to check — your ledger is tidy!',
+    '和上月同期持平。': 'Same as the same period last month.', '今天是本月最后一天。': 'Today is the last day of the month.',
+    '名单商家按规则自动记账；名单外邮件不会自动记账，可在“我的 → 待查看邮件”选择手动记、以后自动记、静音或标为已查看。': 'Listed senders are recorded automatically; others are not — in "Me → Emails to review" you can record one, always record, mute, or mark it reviewed.',
+    '（名单外的邮件不会自动记账；请到“我的 → 待查看邮件”选择怎么处理）': '(emails from senders not on your list are not recorded automatically; choose what to do in "Me → Emails to review")',
+    '照现在的安排，目标可能要攒更久喵。': 'At this rate your goals may take longer, meow.',
+    '要不要降低每月存款、换个小一点的目标，或把目标日期往后调一调呀？': 'Maybe lower the monthly saving, pick a smaller goal, or move the target date later?'
+  });
+  var MILESTONE = { 3: 'Total check-ins: 3 days — a good habit is quietly sprouting~', 7: 'Total check-ins: 7 days! A whole week of careful bookkeeping — great job.',
+    14: 'Total check-ins: 14 days — two weeks in a row, the cat applauds you!', 30: 'Meow~ Total check-ins: 30 days! Bookkeeping has become your little habit.',
+    50: 'Total check-ins: 50 days — halfway to a hundred! Your ledger keeps getting clearer.', 100: 'Total check-ins: 100 days! A hundred days of persistence deserves a big hug.',
+    200: 'Total check-ins: 200 days — you\'re the most patient bookkeeper this cat has ever met.', 365: 'Meow~ Total check-ins: 365 days! A whole year together — thank you for always being here.' };
+  add(T, {
+    '累计打卡 {0} 天啦，好习惯正在悄悄发芽～': function (a) { return MILESTONE[a[0]] || 'Total check-ins: ' + days(a[0]) + '!'; },
+    '累计打卡 {0} 天！一整周都有你认真记账的身影，真棒。': function (a) { return MILESTONE[a[0]]; },
+    '累计打卡 {0} 天，两周坚持下来，小猫为你鼓掌！': function (a) { return MILESTONE[a[0]]; },
+    '喵～累计打卡 {0} 天！记账已经成了你的小习惯啦。': function (a) { return MILESTONE[a[0]]; },
+    '累计打卡 {0} 天，半百达成！账本越来越清楚了。': function (a) { return MILESTONE[a[0]]; },
+    '累计打卡 {0} 天！一百天的坚持，值得一个大大的抱抱。': function (a) { return MILESTONE[a[0]]; },
+    '累计打卡 {0} 天，你是小猫见过最有耐心的记账人。': function (a) { return MILESTONE[a[0]]; },
+    '喵～累计打卡 {0} 天！整整一年的陪伴，谢谢你一直都在。': function (a) { return MILESTONE[a[0]]; },
+    '累计打卡 {0} 天！又一个一百天，我们继续一起加油～': function (a) { return 'Total check-ins: ' + days(a[0]) + '! Another hundred days — let\'s keep going together~'; },
+    '累计打卡 {0} 天！': function (a) { return 'Total check-ins: ' + days(a[0]) + '!'; },
+    '小猫助手（{0} 条新消息）': function (a) { return 'Cat Assistant (' + n(a[0], 'new message', 'new messages') + ')'; },
+    '本月总预算已超出 {0}': 'This month\'s total budget is over by {0}',
+    '本月已经过去 {0}，总预算才用了 {1}，保持得很好！': '{0} of the month has passed and only {1} of the total budget is used — keep it up!',
+    '上个月（{0} 月）比预算少花了 {1}，做得好！': function (a) { return 'Last month (' + mo(a[0]) + ') you spent ' + a[1] + ' less than budgeted — well done!'; },
+    '上个月（{0} 月）刚好用完预算，没有超支，做得好！': function (a) { return 'Last month (' + mo(a[0]) + ') you used exactly your budget without going over — well done!'; },
+    '（上个月还有 {0} 笔未补全，结论可能变化）': function (a) { return '(last month still has ' + entries(a[0]) + ' missing an amount, so this may change)'; },
+    '（有 {0} 笔未补全，预算统计不完整）': function (a) { return '(' + entries(a[0]) + ' missing an amount — budget totals are incomplete)'; },
+    '喵～本月每日平均预算 {0}，目前日均支出 {1}，照这个速度月底可能会超支哦': 'Meow~ Your daily budget this month is {0} and you are spending {1} a day — at this pace you may go over by month end.',
+    '喵～按本月账本估算，扣除预计花费后可存 {0}，全部目标每月计划存 {1}，多出了 {2}。': 'Meow~ Based on this month\'s ledger you can save {0} after expected spending, but your goals plan {1} a month — {2} more.',
+    '还有 {0} 笔账目金额未补全，估算不完整，补全后可能变化。': function (a) { return entries(a[0]) + ' still ' + pl(a[0], 'has', 'have') + ' a missing amount, so the estimate is incomplete and may change.'; },
+    '本月 {0} 日到今天（{1} 月 {2} 日）：支出 {3}，收入 {4}，差额 {5}。': function (a) { return 'From the 1st to today (' + md(a[1], a[2]) + '): spent ' + a[3] + ', earned ' + a[4] + ', net ' + a[5] + '.'; },
+    '本月 {0} 日到今天（{1} 月 {2} 日）还没有记录。': function (a) { return 'No entries from the 1st to today (' + md(a[1], a[2]) + ') yet.'; },
+    '有 {0} 笔未补全，统计不完整。': function (a) { return entries(a[0]) + ' missing an amount — totals are incomplete.'; },
+    '有 {0} 笔未补全，预算统计不完整。': function (a) { return entries(a[0]) + ' missing an amount — budget totals are incomplete.'; },
+    '有 {0} 笔未补全，结果可能变化。': function (a) { return entries(a[0]) + ' missing an amount, so this may change.'; },
+    '本月还剩 {0} 天。': function (a) { return days(a[0]) + ' left this month.'; },
+    '本月 {0}–{1} 日支出 {2}；上月同期（{3} 月 {4}–{5} 日）支出 {6}。': function (a) { return 'Spent ' + a[2] + ' from day ' + a[0] + ' to day ' + a[1] + ' this month; ' + a[6] + ' in the same period last month (' + MON[(+a[3] - 1) % 12] + ' ' + a[4] + '–' + a[5] + ').'; },
+    '多花了 {0}。': 'That is {0} more.', '少花了 {0}。': 'That is {0} less.',
+    '多花了 {0}（{1}）。': 'That is {0} more ({1}).', '少花了 {0}（{1}）。': 'That is {0} less ({1}).',
+    '上月只有 {0} 天，已与上月全月比较。': 'Last month had only {0} days, so it is compared with the whole month.',
+    '本月有 {0} 笔未补全。': function (a) { return 'This month has ' + entries(a[0]) + ' missing an amount.'; },
+    '上月同期有 {0} 笔未补全。': function (a) { return 'The same period last month has ' + entries(a[0]) + ' missing an amount.'; },
+    '本月 {0}–{1} 日': function (a) { return 'This month ' + a[0] + '–' + a[1]; },
+    '{0} 月 {1}–{2} 日': function (a) { return MON[(+a[0] - 1) % 12] + ' ' + a[1] + '–' + a[2]; },
+    '开始日期之前有 {0} 笔金额待补全，期初余额不完整。': function (a) { return entries(a[0]) + ' before the start date ' + pl(a[0], 'is', 'are') + ' missing an amount, so the opening balance is incomplete.'; },
+    '所选范围有 {0} 笔金额待补全，相关余额已标注为不完整。': function (a) { return entries(a[0]) + ' in the range ' + pl(a[0], 'is', 'are') + ' missing an amount; the affected balances are marked incomplete.'; },
+    '报表已生成，共 {0} 笔交易。账本没有被修改。': function (a) { return 'Report created with ' + n(a[0], 'transaction', 'transactions') + '. Your ledger was not changed.'; },
+    'Apple Pay 收件口在 {0} 月 {1} 日 {2} 起拒收了 {3} 笔付款（超出每小时 {4} 笔或每天 {5} 笔的上限），请对照付款记录手动补记': function (a) { return 'From ' + md(a[0], a[1]) + ' ' + a[2] + ' the Apple Pay inbox rejected ' + n(a[3], 'payment', 'payments') + ' (over the limit of ' + a[4] + ' per hour or ' + a[5] + ' per day). Please add them by hand from your payment history'; },
+    '喵～Apple Pay 收件口在 {0} 月 {1} 日 {2} 起拒收了 {3} 笔付款（超出每小时 {4} 笔或每天 {5} 笔的上限），请对照付款记录手动补记哦': function (a) { return 'Meow~ From ' + md(a[0], a[1]) + ' ' + a[2] + ' the Apple Pay inbox rejected ' + n(a[3], 'payment', 'payments') + ' (over the limit of ' + a[4] + ' per hour or ' + a[5] + ' per day). Please add them by hand from your payment history.'; }
+  });
+  // 带类别名（可能是自建类别）的提醒和回答
+  P.push([/^(.+?)已用 (\d+%)，(?:本月还剩 (\d+) 天|今天是本月最后一天)，注意一下哦$/, function (m) {
+    return name(m[1]) + ': ' + m[2] + ' used, ' + (m[3] ? days(m[3]) + ' left this month' : 'today is the last day of the month') + ' — watch out!'; }]);
+  P.push([/^(.+?)本月已超出预算 (\S+)$/, function (m) { return name(m[1]) + ' is over budget by ' + m[2] + ' this month'; }]);
+  P.push([/^本月到今天花得最多的是“(.+)”，共 (\S+?)(?:，占支出 (\S+?))?。$/, function (m) {
+    return 'Top category so far this month: "' + name(m[1]) + '", ' + m[2] + (m[3] ? ' (' + m[3] + ' of spending)' : '') + '.'; }]);
+  P.push([/^(“.+”)并列最多，各 (\S+?)。$/, function (m) {
+    return m[1].split('、').map(function (x) { return '"' + name(x.replace(/^“|”$/g, '')) + '"'; }).join(', ') + ' are tied for the most, ' + m[2] + ' each.'; }]);
+  P.push([/^还有 (.+?)，补上后预算统计会更准哦$/, function (m) { return pendingParts(m[1]) && 'Still ' + pendingParts(m[1]) + ' — fix them for more accurate budget totals.'; }]);
+  P.push([/^还有 (.+)$/, function (m) { var x = pendingParts(m[1]); return x && 'Still ' + x; }]);
+  P.push([/^本月及以前还有 (.+?)，点下面的按钮去处理吧。$/, function (m) { return pendingParts(m[1]) && 'Still to handle up to this month: ' + pendingParts(m[1]) + '. Tap the button below.'; }]);
+  P.push([/^(总预算已超出 (\S+)|总预算还能花 (\S+)|还没有设置总预算)，(?:本月还剩 (\d+) 天。|今天是本月最后一天。)$/, function (m) {
+    var head = m[2] ? 'Total budget is over by ' + m[2] : m[3] ? 'You can still spend ' + m[3] + ' of the total budget' : 'No total budget set';
+    return head + ', ' + (m[4] ? days(m[4]) + ' left this month.' : 'today is the last day of the month.'); }]);
+  P.push([/^(.+?)（(超出|剩余)）$/, function (m) { return name(m[1]) + ' (' + (m[2] === '超出' ? 'over' : 'left') + ')'; }]);
+  P.push([/^(支出|收入) · (.+)$/, function (m) { return (m[1] === '支出' ? 'Expense' : 'Income') + ' · ' + name(m[2]); }]);
+  function pendingParts(s) {
+    var out = s.split('、').map(function (p) {
+      var x = /^(\d+) (笔金额没补全|笔待补全|笔待核对|封待查看邮件)$/.exec(p);
+      if (!x) return null;
+      return x[2] === '封待查看邮件' ? emails(x[1]) + ' to review' : x[2] === '笔待核对' ? entries(x[1]) + ' to check' : entries(x[1]) + ' missing an amount';
+    });
+    return out.indexOf(null) >= 0 ? null : out.join(', ');
+  }
+
+  // ---------- 服务器返回的错误提示 ----------
+  add(E, {
+    '找不到这笔账目': 'Entry not found', '这笔账目已经删除': 'This entry has already been deleted', '这笔账目没有被删除': 'This entry is not deleted',
+    '这笔账目已删除，请先恢复': 'This entry is deleted — restore it first', '找不到这笔账目（可能已超过 30 天被清除）': 'Entry not found (it may have been removed after 30 days)',
+    '这笔账目没有被标为可能重复': 'This entry is not marked as a possible duplicate',
+    '来源名称不能为空': 'Source name cannot be empty', '请选择支出或收入': 'Choose expense or income', '手动记录时金额必填': 'An amount is required for manual entries',
+    '金额不能清空': 'The amount cannot be cleared', '金额必须大于 0；退款请勾选“这是退款”': 'The amount must be greater than 0; for refunds, turn on "This is a refund"',
+    '金额格式不正确，例如 12.34': 'Invalid amount, e.g. 12.34', '金额必须大于 0': 'The amount must be greater than 0', '找不到要关联的原交易': 'Original transaction not found',
+    '只能关联一笔普通支出': 'You can only link to a regular expense', '不能关联自己': 'An entry cannot be linked to itself', '请选择类别': 'Choose a category',
+    '类别与支出/收入类型不一致': 'The category does not match expense/income', '这个类别已删除，请选择其他类别': 'This category was deleted — choose another one',
+    '找不到这个来源': 'Source not found', '这个来源已停用': 'This source is disabled', '类别类型不正确': 'Invalid category type', '类别名称不能为空': 'Category name cannot be empty',
+    '找不到这个类别': 'Category not found', '“未分类”是系统类别，不能删除': '"Uncategorized" is a system category and cannot be deleted', '这个类别已删除': 'This category was deleted',
+    '“未分类”不能单独设预算，它的支出计入总预算': '"Uncategorized" cannot have its own budget; its spending counts toward the total budget',
+    '只能给支出类别设预算': 'Budgets can only be set for expense categories', '这个类别已删除，不能设预算': 'This category was deleted and cannot have a budget',
+    '预算金额必须大于 0': 'The budget must be greater than 0', '金额格式不正确，例如 500 或 500.00': 'Invalid amount, e.g. 500 or 500.00',
+    '月份格式不正确': 'Invalid month', '年份格式不正确': 'Invalid year', '日期时间格式应为 YYYY-MM-DDTHH:mm': 'Date and time must be YYYY-MM-DDTHH:mm',
+    '日期格式不正确，请使用 YYYY-MM-DD': 'Invalid date — use YYYY-MM-DD', '开始日期不能晚于结束日期': 'The start date cannot be after the end date',
+    '请填写 0 或正数，例如 0 或 12.34': 'Enter 0 or a positive number, e.g. 0 or 12.34', '请填写大于 0 的金额，例如 12.34': 'Enter an amount greater than 0, e.g. 12.34',
+    '目标名称请填写 1–60 个字': 'The goal name must be 1–60 characters', '目标日期请选择今天之后的日期': 'Choose a target date after today',
+    '没有目标日期时，每月计划存款需要大于 0': 'Without a target date, the monthly saving must be greater than 0',
+    '这次存入的编号无效，请关闭后重新打开存入窗口': 'This deposit ID is invalid — close and reopen the deposit form', '存入日期不能在未来': 'The deposit date cannot be in the future',
+    '找不到这个储蓄目标，请刷新后再试': 'Savings goal not found. Please refresh and try again.', '这次存入已记录，请重新打开窗口记录另一笔': 'This deposit is recorded — reopen the form to add another',
+    '月份已经变化，请刷新后再填写本月估算': 'The month has changed — refresh before entering this month\'s estimate',
+    '邮件编号不正确': 'Invalid email ID', '找不到这封邮件': 'Email not found', '这封邮件没有可静音的商家网域': 'This email has no sender domain to mute',
+    '这封邮件已经处理过': 'This email has already been handled', '这封邮件没有可保存的商家网域': 'This email has no sender domain to save',
+    '这封邮件没有读到唯一金额，请先手动记账': 'No single amount was found in this email — record it by hand first', '请选择有效的支出类别': 'Choose a valid expense category',
+    '邮件日期不正确，请先手动记账': 'The email date is invalid — record it by hand first', '发件网域格式不正确': 'Invalid sender domain', '名单模式不正确': 'Invalid list mode',
+    '自动识别：没找到实付总额，请对照邮件补填': 'Auto-detect: total paid not found — fill it in from the email', '自动识别：找到多个不同的总额，请对照邮件补填': 'Auto-detect: several different totals found — fill it in from the email',
+    '自动识别：金额不是美元，请按实际扣款补填': 'Auto-detect: amount is not in USD — fill in the amount actually charged', '自动识别：这个平台的金额需要手动补填': 'Auto-detect: this platform\'s amount must be filled in by hand',
+    '没找到实付总额，需要手动核对': 'Total paid not found — check by hand', '找到多个不同的总额，需要手动核对': 'Several different totals found — check by hand',
+    '金额不是美元，需要手动核对（不做汇率换算）': 'Amount is not in USD — check by hand (no currency conversion)', '这个平台只能识别，金额需要手动补': 'This platform is only recognized; fill in the amount by hand',
+    '未能自动关联原订单': 'Could not link the original order automatically', '（原交易已删除）': '(original deleted)', '原交易已清除': 'Original removed',
+    '测试：模拟自动记录': 'Test: simulated automatic entry', '验收测试数据，可删除': 'Acceptance test data, safe to delete'
+  });
+  add(T, {
+    '提醒比例应为 {0}–{1} 之间的整数': 'The alert level must be a whole number from {0} to {1}',
+    '提醒比例应为 {0} 到 {1} 之间的整数': 'The alert level must be a whole number from {0} to {1}'
+  });
+  P.push([/^(.+?)(?:格式不正确)$/, function (m) { var x = name(m[1]); return x === m[1] ? null : 'Invalid ' + x.toLowerCase(); }]);
+  add(E, { '目标金额': 'Goal amount', '已经存下的金额': 'Amount already saved', '目标日期': 'Target date', '每月计划存款': 'Monthly saving', '存入日期': 'Deposit date', '存入金额': 'Deposit amount' });
+})(window.I18N);
+</script>

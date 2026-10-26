@@ -1,0 +1,200 @@
+<script>
+/**
+ * 界面语言（spec 8A）：中文是原文；选 English 时，把页面上“显示出来的文字”翻译成英文，不改业务代码。
+ * - 语言记在本机 localStorage('ledger.lang')：'zh' 或 'en'；读写失败一律按中文。
+ * - 英文模式下用 MutationObserver 监听页面变化，翻译文字节点和 aria-label / placeholder / title 属性；confirm() 也经过翻译。
+ * - 对照表三种条目：EXACT 整句；TEMPLATES 带数字的模板（金额、百分比、日期、整数先换成 {0}{1}…）；PATTERNS 少数含用户内容的正则。
+ *   整句和模板都查不到时，若句子里每一段中文都能单独查到（如“2026-10-01 餐饮 $12.00”里的类别名），逐段替换。
+ * - 查不到的保持原样，记入 window.__i18nMissing（测试用它找出漏翻的地方）。
+ * - 切回中文：每个被翻译的节点记住原文，逐个还原。
+ * - 带 translate="no" 的元素（如语言选项“中文 / English”）不翻译。
+ */
+(function () {
+  var LANG_KEY = 'ledger.lang';
+  var CJK = /[㐀-鿿　-〿！-～]/;
+  // 金额、日期、时间、百分比、整数和小数 → 占位符
+  var TOKEN = /[+\-−]?\$[\d,]+(?:\.\d+)?|\d{4}-\d{2}(?:-\d{2})?|\d{1,2}:\d{2}|[+\-−]?\d[\d,]*(?:\.\d+)?%?/g;
+  var ATTRS = ['aria-label', 'placeholder', 'title'];
+  var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  var MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  function plural(n, one, many) { return String(n).replace(/^[+\-−]/, '') === '1' ? one : many; }
+  function month(n) { return MONTHS[(+n - 1) % 12] || n; }
+
+  /** 整句对照 */
+  var EXACT = {};
+
+  /** 模板：键里的数字写成 {0}{1}…；值是字符串（{0} 会被替换）或函数(args) */
+  var TEMPLATES = {};
+
+  /** 含用户内容的句子：[正则, 函数(match)] */
+  var PATTERNS = [];
+
+  var lang = readLang();
+  var originals = new WeakMap();          // 节点 → { text: 原文, tr: 译文 } 或 元素 → { attr: { text, tr } }
+  var missing = window.__i18nMissing = Object.create(null);
+  var observer = null;
+
+  function readLang() {
+    try { return window.localStorage.getItem(LANG_KEY) === 'en' ? 'en' : 'zh'; } catch (e) { return 'zh'; }
+  }
+  function saveLang(v) {
+    try { window.localStorage.setItem(LANG_KEY, v); } catch (e) { /* 存不了就只在这次打开时有效 */ }
+  }
+
+  function fill(val, args) {
+    if (typeof val === 'function') return val(args);
+    return val.replace(/\{(\d+)\}/g, function (_, i) { return args[+i]; });
+  }
+
+  /** 翻译一段文字；不需要或查不到时返回 null。 */
+  function translateCore(core) {
+    if (Object.prototype.hasOwnProperty.call(EXACT, core)) return EXACT[core];
+    var args = [];
+    var key = core.replace(TOKEN, function (m) { args.push(m.replace('−', '-')); return '{' + (args.length - 1) + '}'; });
+    if (args.length && Object.prototype.hasOwnProperty.call(TEMPLATES, key)) return fill(TEMPLATES[key], args);
+    for (var i = 0; i < PATTERNS.length; i++) {
+      var m = core.match(PATTERNS[i][0]);
+      if (m) {
+        var out = PATTERNS[i][1](m, translateText);
+        if (out !== null && out !== undefined) return out;
+      }
+    }
+    // 分句：按句末标点拆开逐句翻译；句末的“（…）”补充说明也单独翻译
+    var sentences = core.match(/[^。！？]+[。！？]?/g) || [];
+    if (sentences.length > 1) {
+      var parts = [];
+      for (var k = 0; k < sentences.length; k++) {
+        var sOut = translateCore(sentences[k].trim());
+        if (sOut === null) { parts = null; break; }
+        parts.push(sOut.trim());
+      }
+      if (parts) return parts.join(' ');
+    }
+    var tail = /^(.+?)(（[^（）]*）)([。！]?)$/.exec(core);
+    if (tail) {
+      var head = translateCore(tail[1] + tail[3]), note = translateCore(tail[2]);
+      if (head !== null && note !== null) return head.replace(/[.!]$/, '') + ' ' + note.trim() + (tail[3] === '。' ? '.' : tail[3] === '！' ? '!' : '');
+    }
+    // 逐段：每段中文都要能查到，否则放弃
+    var ok = true;
+    var pieced = core.replace(/[㐀-鿿]+|[　-〿！-～]/g, function (run) {
+      if (Object.prototype.hasOwnProperty.call(EXACT, run)) return EXACT[run];
+      ok = false; return run;
+    });
+    return ok && pieced !== core ? pieced : null;
+  }
+
+  function translateText(text) {
+    if (!text || !CJK.test(text)) return null;
+    var core = text.trim();
+    var start = text.indexOf(core.charAt(0));
+    var lead = text.slice(0, start), trail = text.slice(start + core.length);
+    var out = translateCore(core);
+    if (out === null) { missing[core] = (missing[core] || 0) + 1; return null; }
+    return lead + out + trail;
+  }
+
+  /** 给其他脚本用：中文模式原样返回；英文模式翻译（查不到返回原文）。 */
+  function t(text) {
+    if (lang !== 'en') return text;
+    var out = translateText(String(text));
+    return out === null ? text : out;
+  }
+
+  function skipped(node) {
+    var el = node.nodeType === 1 ? node : node.parentNode;
+    if (!el || !el.closest) return false;
+    return !!el.closest('script, style, [translate="no"]');
+  }
+
+  function doTextNode(node) {
+    if (skipped(node)) return;
+    var out = translateText(node.nodeValue);
+    if (out === null || out === node.nodeValue) return;
+    originals.set(node, { text: node.nodeValue, tr: out });
+    node.nodeValue = out;
+  }
+  function doAttrs(el) {
+    if (skipped(el)) return;
+    ATTRS.forEach(function (a) {
+      var v = el.getAttribute && el.getAttribute(a);
+      if (!v) return;
+      var out = translateText(v);
+      if (out === null || out === v) return;
+      var rec = originals.get(el) || {};
+      rec[a] = { text: v, tr: out };
+      originals.set(el, rec);
+      el.setAttribute(a, out);
+    });
+  }
+  function walk(root) {
+    if (!root) return;
+    if (root.nodeType === 3) { doTextNode(root); return; }
+    if (root.nodeType !== 1 && root.nodeType !== 9 && root.nodeType !== 11) return;
+    if (root.nodeType === 1) doAttrs(root);
+    var doc = root.ownerDocument || root;
+    var tw = doc.createTreeWalker(root, 5 /* 元素 + 文字 */, null, false);
+    var n;
+    while ((n = tw.nextNode())) {
+      if (n.nodeType === 3) doTextNode(n); else doAttrs(n);
+    }
+  }
+  function restore(root) {
+    var doc = root.ownerDocument || root;
+    var tw = doc.createTreeWalker(root, 5, null, false);
+    var n;
+    while ((n = tw.nextNode())) {
+      var rec = originals.get(n);
+      if (!rec) continue;
+      if (n.nodeType === 3) {
+        if (n.nodeValue === rec.tr) n.nodeValue = rec.text;     // 之后被程序改过的不还原
+      } else {
+        Object.keys(rec).forEach(function (a) { if (n.getAttribute(a) === rec[a].tr) n.setAttribute(a, rec[a].text); });
+      }
+      originals.delete(n);
+    }
+  }
+
+  function start() {
+    if (observer || !window.MutationObserver) return;
+    observer = new MutationObserver(function (list) {
+      if (lang !== 'en') return;
+      list.forEach(function (m) {
+        if (m.type === 'characterData') doTextNode(m.target);
+        else if (m.type === 'attributes') doAttrs(m.target);
+        else for (var i = 0; i < m.addedNodes.length; i++) walk(m.addedNodes[i]);
+      });
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATTRS });
+  }
+
+  function apply() {
+    document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : 'zh-CN');
+    if (lang === 'en') { walk(document.body); start(); }
+  }
+
+  /** 切换语言：英文 → 翻译整页；中文 → 还原原文。 */
+  function setLang(v) {
+    v = v === 'en' ? 'en' : 'zh';
+    if (v === lang) return;
+    lang = v;
+    saveLang(v);
+    if (v === 'zh') restore(document.body);
+    apply();
+  }
+
+  /** 内置类别的英文名（来自 api_bootstrap 的 name_en）加入整句对照 */
+  function addCategories(cats) {
+    (cats || []).forEach(function (c) { if (c && c.name && c.name_en) EXACT[c.name] = c.name_en; });
+    if (lang === 'en') walk(document.body);
+  }
+
+  window.I18N = { lang: function () { return lang; }, setLang: setLang, t: t, addCategories: addCategories, translate: translateText,
+    nativeConfirm: window.confirm,
+    EXACT: EXACT, TEMPLATES: TEMPLATES, PATTERNS: PATTERNS, plural: plural, month: month, MON: MON };
+  // 等对照表（ui/i18n-en.js）加载完、页面解析完再翻译整页；之后由 MutationObserver 接手
+  if (window.I18N.nativeConfirm) window.confirm = function (msg) { return window.I18N.nativeConfirm.call(window, t(msg)); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', apply); else apply();
+})();
+</script>

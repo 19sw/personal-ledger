@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>记账应用地图</title>
+<style>
+  :root {
+    --bg: #f6fbf8; --card: #ffffff; --ink: #1f2d27; --muted: #5b6b64;
+    --line: #cfe3da; --accent: #1d8f6a; --accent-soft: #e2f4ec; --code-bg: #eef5f1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121a17; --card: #1a2420; --ink: #e4efe9; --muted: #9db0a7;
+      --line: #2e413a; --accent: #5dcaa5; --accent-soft: #1f3a30; --code-bg: #22302b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.7rem; margin: 0 0 4px; }
+  h2 { font-size: 1.2rem; margin: 36px 0 10px; padding-top: 4px; border-top: 1px solid var(--line); }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+  pre { background: var(--code-bg); padding: 10px 12px; border-radius: 8px; overflow-x: auto; font-size: .85rem; line-height: 1.5; }
+  pre code { background: none; padding: 0; }
+  ol, ul { padding-left: 1.3em; }
+  li { margin: 6px 0; }
+  .stop { display: flex; gap: 12px; align-items: flex-start; }
+  .num { flex: 0 0 28px; height: 28px; border-radius: 50%; background: var(--accent); color: var(--bg); font-weight: 700; display: grid; place-items: center; }
+  .stop h3 { margin: 0 0 4px; font-size: 1rem; }
+  .tag { display: inline-block; font-size: .78rem; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 10px; }
+  details { margin: 8px 0; }
+  summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+  summary:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  svg { width: 100%; height: auto; display: block; }
+  svg .box { fill: var(--card); stroke: var(--accent); stroke-width: 1.5; }
+  svg .store { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  svg text { fill: var(--ink); font-size: 13px; font-family: inherit; }
+  svg .small { fill: var(--muted); font-size: 11px; }
+  svg .arrow { stroke: var(--muted); stroke-width: 1.5; fill: none; marker-end: url(#ah); }
+  .foot { color: var(--muted); font-size: .88rem; margin-top: 40px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>记账应用地图</h1>
+  <p class="sub">一张随身带走的小地图：这个应用由哪几块组成、一笔账从哪里进来、以后想改东西该从哪里下手。</p>
+
+  <h2>这个应用是什么</h2>
+  <p>一个在 iPhone Safari 里使用的个人记账网页。账本是你自己 Google 账号里的一张 Google 表格，程序运行在 Google Apps Script 上，只有你本人能打开。它的核心特点是：<strong>实体店付款（Apple Pay）和线上付款（Gmail 收据）汇入同一本账，同时区分不同兼职的收入</strong>；读不到金额的账目不会丢，而是标成“待补全”。</p>
+  <div class="card">
+    <strong>主要的几块</strong>
+    <ul>
+      <li><code>apps/main/ui/</code>：你在手机上看到的页面（HTML、样式和页面脚本）。</li>
+      <li><code>apps/main/web.js</code>：页面能调用的服务器函数，名字都以 <code>api_</code> 开头。</li>
+      <li><code>apps/main/core/</code>：真正的记账规则——保存账目、月报、预算、小助手、收据识别。这些是纯函数，所以能在本机用 Node 测试。</li>
+      <li><code>apps/main/store.js</code>：把 Google 表格包装成“列出／新增／修改”的接口。</li>
+      <li><code>apps/main/jobs.js</code>：定时任务——整理 Apple Pay 收件箱、读 Gmail 收据、每日清理。</li>
+      <li><code>apps/inbox/</code>：独立的“记账-收件口”，接收 iPhone 快捷指令送来的 Apple Pay 交易。</li>
+      <li><code>tests/</code>：自动测试，用假的表格和假的 Gmail 跑真实代码。</li>
+    </ul>
+  </div>
+
+  <h2>一笔账是怎么进到账本的</h2>
+  <svg viewBox="0 0 720 300" role="img" aria-labelledby="dg-t dg-d">
+    <title id="dg-t">三个入口汇入同一本账</title>
+    <desc id="dg-d">手动记账经由网页调用 api_saveEntry；Apple Pay 经由收件口和 processInbox；Gmail 收据经由 pollReceipts；三条路都进入 core/service.js，再写进账本表格，最后在账目页和月报中显示。</desc>
+    <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor" style="color: var(--muted)"/></marker></defs>
+    <rect class="box" x="10" y="20" width="170" height="54" rx="10"/>
+    <text x="22" y="43">手动记一笔</text><text class="small" x="22" y="62">ui/app.js.html · saveForm</text>
+    <rect class="box" x="10" y="122" width="170" height="54" rx="10"/>
+    <text x="22" y="145">Apple Pay 付款</text><text class="small" x="22" y="164">收件口 → processInbox</text>
+    <rect class="box" x="10" y="224" width="170" height="54" rx="10"/>
+    <text x="22" y="247">Gmail 收据</text><text class="small" x="22" y="266">jobs.js pollReceipts</text>
+    <rect class="box" x="250" y="20" width="170" height="54" rx="10"/>
+    <text x="262" y="43">web.js</text><text class="small" x="262" y="62">api_saveEntry</text>
+    <rect class="box" x="250" y="160" width="170" height="80" rx="10"/>
+    <text x="262" y="184">core/ 记账规则</text><text class="small" x="262" y="203">service.js svcSaveEntry</text><text class="small" x="262" y="220">receipt_pipeline.js</text>
+    <rect class="store" x="490" y="160" width="100" height="80" rx="10"/>
+    <text x="504" y="196">「账本」</text><text class="small" x="504" y="215">Google 表格</text>
+    <rect class="box" x="490" y="20" width="220" height="54" rx="10"/>
+    <text x="502" y="43">账目页、月报、小猫助手</text><text class="small" x="502" y="62">你在手机上看到的结果</text>
+    <path class="arrow" d="M180 47 H246"/>
+    <path class="arrow" d="M335 74 V156"/>
+    <path class="arrow" d="M180 149 C215 149 220 190 246 190"/>
+    <path class="arrow" d="M180 251 C215 251 220 215 246 215"/>
+    <path class="arrow" d="M420 200 H486"/>
+    <path class="arrow" d="M540 160 V78"/>
+  </svg>
+
+  <h2>参考路线：跟着“记一笔”走三站</h2>
+  <p><span class="tag">参考路线，尚未实际带你走过</span> 打开项目后，用编辑器的搜索功能找下面加粗的名字即可定位（行号会随修改变化，名字不会）。</p>
+
+  <div class="card stop">
+    <div class="num">1</div>
+    <div>
+      <h3>你点“保存”的地方</h3>
+      <p><code>apps/main/ui/app.js.html</code>，搜索 <strong><code>function saveForm</code></strong>。它先检查有没有填金额（防止空记录），把按钮缩成圆形做动画，然后通过 <code>api('api_saveEntry', input)</code> 把这笔账发给服务器。</p>
+      <details><summary>看一眼关键代码</summary>
+<pre><code>if (!state.draft.id &amp;&amp; !amountIsPositive(state.draft.amount)) { showHint(&#39;先填金额&#39;); return; }
+var input = collectForm();
+...
+Promise.all([api(&#39;api_saveEntry&#39;, input), ...]).then(function (res) { ... });</code></pre>
+      </details>
+    </div>
+  </div>
+
+  <div class="card stop">
+    <div class="num">2</div>
+    <div>
+      <h3>服务器的大门</h3>
+      <p><code>apps/main/web.js</code>，搜索 <strong><code>function api_saveEntry</code></strong>。它先拿到“锁”（同一时间只让一个操作改账本，防止和定时任务撞车），再把工作交给 <code>svcSaveEntry</code>。</p>
+    </div>
+  </div>
+
+  <div class="card stop">
+    <div class="num">3</div>
+    <div>
+      <h3>真正的记账规则</h3>
+      <p><code>apps/main/core/service.js</code>，搜索 <strong><code>function svcSaveEntry</code></strong>。这里检查输入是否合法、新建或修改账目、写进表格（<code>repo.insert('entries', ...)</code>），然后记一次打卡（<code>svcOnEntryCreated_</code>）并检查是否和 Apple Pay 等其他入口的账目疑似重复。保存完成后，页面刷新，你就在账目页和月报里看到它了。</p>
+    </div>
+  </div>
+
+  <h2>想改东西，从这里开始</h2>
+  <ul>
+    <li><strong>页面上的文字、按钮、布局</strong>：<code>apps/main/ui/index.html</code> 和 <code>apps/main/ui/app.js.html</code>。</li>
+    <li><strong>颜色和样式</strong>：<code>apps/main/ui/style.html</code>。</li>
+    <li><strong>默认类别清单</strong>：<code>apps/main/core/service.js</code> 搜索 <code>svcEnsureDefaults</code>。改完要重跑 <code>setupLedger</code> 才会补进已有账本。</li>
+    <li><strong>小猫助手说什么、什么时候提醒</strong>：<code>apps/main/core/assistant.js</code>。</li>
+    <li><strong>月报怎么算</strong>：<code>apps/main/core/report.js</code>；预算在 <code>apps/main/core/budget.js</code>。</li>
+    <li><strong>某个平台的收据怎么识别</strong>：<code>apps/main/core/platforms/</code>（<code>doordash.js</code>、<code>ubereats.js</code>、<code>uber.js</code>）；共用流程在 <code>apps/main/core/receipt_pipeline.js</code>。</li>
+    <li><strong>改完之后</strong>：先跑测试；涉及新的 <code>api_</code> 函数时，<code>tests/ui.test.js</code> 会要求把它加进评审过的名单，这是故意设的安全关卡。</li>
+  </ul>
+
+  <h2>一个可以带到下个项目的做法</h2>
+  <div class="card">
+    <p><strong>先用真实数据做一次只读试运行，再开启自动化。</strong></p>
+    <p>Gmail 收据没有直接开启自动入账，而是先做了只读的 G1 试运行（<code>apps/main/jobs.js</code> 的 <code>dryRunReceipts</code>，规则见 <code>devpost/spec.md</code> 第 6.8 节）。它不写账本，只报告“读到了什么”。结果推翻了好几个原来的假设：DoorDash 收据里读不到订单号、Uber 邮件其实都是打车、熊猫外卖根本没有邮件。于是方案在开启轮询之前就改了：去掉熊猫外卖、Uber 记成“交通”、DoorDash 改用“同一家餐厅＋6 小时内”判断重复，这些情况都写成了合成样本测试（<code>tests/receipts-rules.test.js</code>、<code>tests/receipts-pipeline.test.js</code>）。</p>
+    <p>换到别的项目也一样：只要要接一个不熟悉的外部数据来源，先做一个“只看不改”的试运行，拿真实结果对照计划，再决定怎么写规则。这样坏消息来得早，改起来也便宜。</p>
+  </div>
+
+  <h2>怎么再跑起来</h2>
+  <pre><code>cd Build-With-AI-Basics
+npm install
+npm test          # 运行全部自动测试
+npm run preview   # 在本机浏览器预览页面（使用假数据）</code></pre>
+  <p>上线到 Google：在 <code>apps/main</code> 目录里运行 <code>npx clasp push --force</code>，再在 Apps Script 里更新部署。完整步骤见 <code>docs/setup-guide.md</code>。</p>
+
+  <p class="foot">这张地图根据提交 <code>f7479ee</code>（第 9 版，2026-10-26）时的代码制作，是一份快照；代码以后变化时，文件名和函数名可能会对不上，以实际代码为准。</p>
+</main>
+</body>
+</html>

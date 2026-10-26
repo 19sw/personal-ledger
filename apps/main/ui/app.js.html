@@ -1,0 +1,1928 @@
+<script>
+/* 记账网页的前端逻辑（在手机浏览器里运行）。数据都来自服务器（google.script.run），
+   日期一律使用服务器给出的费城时间，不使用手机自己的时区。 */
+(function () {
+  'use strict';
+
+  var state = {
+    boot: null,          // 服务器返回的初始数据：当前月份、类别、来源等
+    month: null,         // 账目页正在看的月份
+    filter: 'all',       // 'all' 或 'attention'（只看待补全/待核对）
+    reportMonth: null,
+    reportTab: 'month',  // 月报 / 账单 / 储蓄 / 消费习惯
+    savingsView: null,
+    savingsEditor: null, // {type: 'goal'|'deposit', goalId}
+    savingsBusy: false,
+    savingsWriteEpoch: 0, // successful writes invalidate earlier savings reads
+    savingsDepositIntent: null, // once submitted, keep both request ID and payload for retries
+    insightsRequest: 0,
+    billsTab: 'month',   // 账单：'month' 月账单 / 'year' 年账单
+    billsYear: null,     // 月账单正在看的年份
+    budgetMonth: null,   // 预算页正在看的月份（只有当前月可以修改）
+    budgetView: null,    // 预算页最近一次的数据
+    bedit: null,         // 预算编辑面板：{scope, name, amount, mode: 'pick'|'amount', existing}
+    editing: null,       // 正在编辑的账目（新建时为 null）
+    draft: null,         // 记一笔/编辑面板里正在填写的内容（见 newDraft）
+    gridType: 'expense', // 类别网格当前显示的标签：支出 / 收入
+    sheetOpen: false,    // 金额面板（底部抽屉）是否打开
+    lastPage: 'entries', // 点“取消”时回到哪一页
+    saving: false,       // 正在保存/播放动画时为 true，防止重复提交
+    meSub: null,         // 我的页正在看的子页面：null 主页面 / 'cats' / 'sources' / 'near' / 'deleted'
+    assistantOpen: false // 小猫助手对话窗口是否打开
+  };
+
+  // ================================================================
+  // 保存完成动画参数（客户 2026-10-14 确认，改数字只改这里）
+  //   SPEED 是整体速度：所有时长 = 基础时长 / SPEED（0.8 就是整体慢一点）。
+  // ================================================================
+  var SAVE_ANIM = {
+    SPEED: 0.8,
+    SHRINK_MS: 320,            // 按钮缩成圆形（基础时长）
+    CHECK_MS: 350,             // 对勾描出来
+    BOUNCE_MS: 400,            // 轻轻弹一下
+    PARTICLE_MIN_MS: 600,      // 粒子飞散时长范围
+    PARTICLE_MAX_MS: 800,
+    PARTICLE_COUNT: 24,        // 粒子个数
+    BURST_PX: 65,              // 飞散距离
+    BURST_JITTER_MIN: 0.85,    // 每个粒子的距离再随机乘 0.85–1.25
+    BURST_JITTER_MAX: 1.25,
+    PARTICLE_SIZE_PX: 10,      // 圆点大小
+    GLYPH_SCALE: 1.8,          // 星星／爱心的字号 = 圆点大小 × 1.8
+    BOUNCE_PEAK: 1.22,         // 弹跳最大放大倍数
+    SHAPES: ['dot', 'star', 'heart'],
+    COLORS: ['#F0997B', '#D85A30', '#ED93B1', '#FAC775', '#D4537E'],
+    SUCCESS_FILL: '#0F6E56',   // 成功后按钮的颜色（样式表里 .savebtn.done 同值）
+    SHAKE_MS: 400,             // 失败时左右抖动
+    NAV_DELAY_MS: 1000,        // 成功后停留多久再回到账目列表
+    REDUCED_NAV_DELAY_MS: 600  // “减少动态效果”时的停留时间
+  };
+  function animMs(base) { return base / SAVE_ANIM.SPEED; }
+
+  // 类别小图标（内嵌 SVG，24×24 线条风格，按类别名称查找）。没有收录的类别（用户自己建的）显示名称的第一个字。
+  var ICONS = {
+    '餐饮': '<path d="M4 11h16a8 8 0 0 1-16 0z"/><path d="M9 20h6M9 4.5c0 1.5 1.5 1.5 1.5 3M13.5 4.5c0 1.5 1.5 1.5 1.5 3"/>',
+    '购物': '<path d="M6 8h12l1 12H5z"/><path d="M9 8V7a3 3 0 0 1 6 0v1"/>',
+    '交通': '<rect x="4" y="4" width="16" height="13" rx="3"/><path d="M4 11h16M7 17v3M17 17v3"/><circle cx="8" cy="14" r=".8"/><circle cx="16" cy="14" r=".8"/>',
+    '住房': '<path d="M4 11l8-7 8 7"/><path d="M6 10v10h12V10M10 20v-5h4v5"/>',
+    '日用': '<path d="M12 3c4 5 6 8 6 11a6 6 0 0 1-12 0c0-3 2-6 6-11z"/>',
+    '娱乐': '<rect x="3" y="8" width="18" height="10" rx="5"/><path d="M8 11v4M6 13h4"/><circle cx="15" cy="12.5" r=".8"/><circle cx="17.5" cy="14.5" r=".8"/>',
+    '蔬菜': '<path d="M5 19c0-8 5-13 14-14 0 9-5 14-13 14"/><path d="M5 19c3-5 6-8 10-10"/>',
+    '水果': '<path d="M12 8c-3-2-7-.5-7 4 0 4 3 8 5 8 1 0 1.2-.6 2-.6s1 .6 2 .6c2 0 5-4 5-8 0-4.5-4-6-7-4z"/><path d="M12 8c0-2 1-3.5 3-4"/>',
+    '零食': '<circle cx="12" cy="12" r="8.5"/><circle cx="9" cy="10" r=".9"/><circle cx="14.5" cy="9" r=".9"/><circle cx="13" cy="14.5" r=".9"/><circle cx="8.5" cy="15" r=".9"/>',
+    '咖啡奶茶': '<path d="M6 8h12l-1.5 12h-9z"/><path d="M5 8h14M13 8l2-5"/>',
+    '买菜': '<path d="M3 10h18l-2 9H5z"/><path d="M8 10l3-5M16 10l-3-5"/>',
+    '服饰': '<path d="M8 4L3 7l2.5 4L8 10v10h8V10l2.5 1L21 7l-5-3c-.5 1.5-2 2.5-4 2.5S8.5 5.5 8 4z"/>',
+    '美容': '<path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/>',
+    '医疗': '<rect x="4" y="4" width="16" height="16" rx="4"/><path d="M12 8v8M8 12h8"/>',
+    '运动': '<path d="M3 10v4M6 8v8M18 8v8M21 10v4M6 12h12"/>',
+    '旅行': '<path d="M21 4L3 11l7 2.5L12.5 21z"/><path d="M10 13.5L21 4"/>',
+    '通讯': '<rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 18h2"/>',
+    '订阅会员': '<path d="M4 8l4 4 4-6 4 6 4-4-1.5 10h-13z"/>',
+    '学习': '<path d="M2 9l10-5 10 5-10 5z"/><path d="M6 11.5V16c0 1.5 3 3 6 3s6-1.5 6-3v-4.5"/>',
+    '书籍': '<path d="M12 6c-2-1.5-5-2-8-2v14c3 0 6 .5 8 2 2-1.5 5-2 8-2V4c-3 0-6 .5-8 2z"/><path d="M12 6v14"/>',
+    '数码': '<rect x="5" y="5" width="14" height="10" rx="2"/><path d="M3 19h18"/>',
+    '宠物': '<circle cx="7.5" cy="10" r="1.7"/><circle cx="12" cy="7" r="1.7"/><circle cx="16.5" cy="10" r="1.7"/><path d="M12 12c-3 0-5.5 3-5.5 5 0 1.5 1.5 2 3 1.5.8-.3 1.6-.5 2.5-.5s1.7.2 2.5.5c1.5.5 3-.1 3-1.5 0-2-2.5-5-5.5-5z"/>',
+    '礼物': '<rect x="4" y="12" width="16" height="8" rx="2"/><path d="M3 8h18v4H3zM12 8v12M12 8c-3 0-5-1-5-3s3-2.5 5 3c2-5.5 5-5 5-3s-2 3-5 3"/>',
+    '社交': '<circle cx="9" cy="9" r="3.2"/><path d="M3 20c.6-3.4 3-5 6-5s5.4 1.6 6 5"/><circle cx="17" cy="9.5" r="2.4"/><path d="M17 14.5c2.3 0 3.6 1.4 4 4"/>',
+    '其他': '<circle cx="6" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18" cy="12" r="1.4"/>',
+    '未分类': '<path d="M3 12V4h8l9 9-8 8z"/><circle cx="7.5" cy="8.5" r="1"/>',
+    '工资': '<rect x="3" y="6" width="18" height="13" rx="3"/><path d="M21 11h-4a2 2 0 0 0 0 4h4"/>',
+    '兼职': '<rect x="3" y="7" width="18" height="12" rx="3"/><path d="M9 7V5h6v2M3 12h18"/>',
+    '奖金': '<path d="M8 4h8v5a4 4 0 0 1-8 0z"/><path d="M8 6H4v1a3 3 0 0 0 4 3M16 6h4v1a3 3 0 0 1-4 3M12 13v4M8 20h8M10 17h4"/>',
+    '红包礼金': '<rect x="5" y="3" width="14" height="18" rx="3"/><path d="M5 9c4 3 10 3 14 0"/><circle cx="12" cy="12.5" r="1.6"/>',
+    '报销': '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
+    '退税': '<circle cx="12" cy="12" r="8.5"/><path d="M9 15l6-6"/><circle cx="9.3" cy="9.3" r=".9"/><circle cx="14.7" cy="14.7" r=".9"/>',
+    '利息': '<path d="M4 17l5-5 4 3 7-8"/><path d="M15 7h5v5"/>'
+  };
+  /** 图标内部内容：收录的类别画 SVG，其他显示名称第一个字。 */
+  function iconInner(name) {
+    var inner = Object.prototype.hasOwnProperty.call(ICONS, name) ? ICONS[name] : null;
+    if (!inner) return esc(String(name || '?').charAt(0));
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>';
+  }
+  function catIcon(name) { return '<span class="ci">' + iconInner(name) + '</span>'; }
+
+  // ---------- 小黑猫头像（原创的简单几何图形，内嵌 SVG）：normal 普通 / happy 开心（眯眼 + 张嘴） ----------
+  var CAT_INK = '#23252B', CAT_PINK = '#F4A6B8', CAT_MINT = '#5DCAA5';
+  function catSvg(mood) {
+    var happy = mood === 'happy';
+    var eyes = happy
+      ? '<path d="M19.5 34.5q4.5-5.5 9 0M35.5 34.5q4.5-5.5 9 0" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/>'
+      : '<circle cx="24" cy="33" r="5.2" fill="#fff" stroke="#CDEBDD" stroke-width="1.4"/><circle cx="40" cy="33" r="5.2" fill="#fff" stroke="#CDEBDD" stroke-width="1.4"/>' +
+        '<circle cx="24.6" cy="33.8" r="2.7" fill="' + CAT_INK + '"/><circle cx="40.6" cy="33.8" r="2.7" fill="' + CAT_INK + '"/>' +
+        '<circle cx="25.7" cy="32.5" r=".9" fill="#fff"/><circle cx="41.7" cy="32.5" r=".9" fill="#fff"/>';
+    var mouth = happy
+      ? '<path d="M28.3 41.6q3.7 6.4 7.4 0z" fill="' + CAT_PINK + '" stroke="' + CAT_PINK + '" stroke-width="1.2" stroke-linejoin="round"/>'
+      : '<path d="M29 42.2q1.5 1.6 3 0q1.5 1.6 3 0" fill="none" stroke="#DADDE0" stroke-width="1.3" stroke-linecap="round"/>';
+    return '<svg class="cat" viewBox="0 0 64 64" aria-hidden="true" data-mood="' + (happy ? 'happy' : 'normal') + '">' +
+      '<path d="M13 31L16.5 8.5 30 20.5zM51 31L47.5 8.5 34 20.5z" fill="' + CAT_INK + '" stroke="' + CAT_INK + '" stroke-width="3" stroke-linejoin="round"/>' +
+      '<path d="M18.2 22.5l1.4-8.6 6.3 5.6zM45.8 22.5l-1.4-8.6-6.3 5.6z" fill="' + CAT_PINK + '"/>' +
+      '<ellipse cx="32" cy="34" rx="20.5" ry="17.5" fill="' + CAT_INK + '"/>' + eyes +
+      '<path d="M30.4 38.6h3.2l-1.6 1.9z" fill="' + CAT_PINK + '"/>' + mouth +
+      '<path d="M15 39.5l7 .8M15.5 43.5l6.6-1.4M49 39.5l-7 .8M48.5 43.5l-6.6-1.4" stroke="#6B6F78" stroke-width="1" stroke-linecap="round"/>' +
+      '<path d="M23.5 47.5l7.5 3.7-7.5 3.8zM40.5 47.5L33 51.2l7.5 3.8z" fill="' + CAT_MINT + '" stroke="' + CAT_MINT + '" stroke-width="1.2" stroke-linejoin="round"/>' +
+      '<circle cx="32" cy="51.2" r="2.6" fill="#3FA683"/></svg>';
+  }
+  function catAvatar(mood, cls) {
+    return '<span class="cat-av' + (cls ? ' ' + cls : '') + '" data-mood="' + (mood === 'happy' ? 'happy' : 'normal') + '">' + catSvg(mood) + '</span>';
+  }
+  /** 小猫爪印（打卡章）：薄荷色 + 粉色肉垫 */
+  var PAW_STAMP = '<svg class="paw" viewBox="0 0 32 32" aria-hidden="true"><g fill="#5DCAA5"><circle cx="8" cy="13" r="3.9"/><circle cx="13.3" cy="7.6" r="3.9"/>' +
+    '<circle cx="18.7" cy="7.6" r="3.9"/><circle cx="24" cy="13" r="3.9"/><path d="M16 13.5c4.6 0 9 4.6 9 8.6 0 3.2-2.4 4.6-4.8 4.1-1.6-.3-2.6-.9-4.2-.9s-2.6.6-4.2.9C9.4 26.7 7 25.3 7 22.1c0-4 4.4-8.6 9-8.6z"/></g>' +
+    '<g fill="#F4A6B8"><circle cx="8" cy="13.3" r="2"/><circle cx="13.3" cy="7.9" r="2"/><circle cx="18.7" cy="7.9" r="2"/><circle cx="24" cy="13.3" r="2"/><ellipse cx="16" cy="20.8" rx="4.6" ry="3.4"/></g></svg>';
+
+  // ---------- 小工具 ----------
+  function api(name) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolve, reject) {
+      var runner = google.script.run.withSuccessHandler(resolve).withFailureHandler(reject);
+      runner[name].apply(runner, args);
+    });
+  }
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function money(cents) {
+    if (cents === null || cents === undefined) return '—';
+    var neg = cents < 0, abs = Math.abs(cents);
+    var whole = String(Math.floor(abs / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return (neg ? '-' : '') + '$' + whole + '.' + String(abs % 100).padStart(2, '0');
+  }
+  function pct(tenths) {
+    return tenths === null || tenths === undefined ? '' : Math.floor(tenths / 10) + '.' + (tenths % 10) + '%';
+  }
+  function addMonths(month, delta) {
+    var y = +month.slice(0, 4), mo = +month.slice(5, 7) - 1 + delta;
+    y += Math.floor(mo / 12); mo = ((mo % 12) + 12) % 12;
+    return y + '-' + String(mo + 1).padStart(2, '0');
+  }
+  function monthLabel(m) { return m.slice(0, 4) + ' 年 ' + (+m.slice(5, 7)) + ' 月'; }
+  function dayLabel(d) { return (+d.slice(5, 7)) + ' 月 ' + (+d.slice(8, 10)) + ' 日'; }
+  function toast(msg) {
+    var t = $('toast'); t.textContent = msg; t.hidden = false;
+    clearTimeout(toast._t); toast._t = setTimeout(function () { t.hidden = true; }, 2500);
+  }
+  function fail(err) { toast((err && err.message) || '出错了，请稍后再试'); }
+  function categoriesOf(type, includeId) {
+    return state.boot.categories.filter(function (c) {
+      return c.type === type && (!c.archived || c.id === includeId);
+    });
+  }
+
+  // ---------- 页面切换 ----------
+  var PAGES = ['entries', 'form', 'report', 'budget', 'settings'];
+  var TITLES = { entries: '账目', form: '记一笔', report: '报表', budget: '预算', settings: '我的' };
+  function show(page) {
+    if (page !== 'form') {                       // 离开记一笔：收起抽屉，记住从哪一页来（“取消”回到那里）
+      closeSheet(true);
+      state.draft = null;
+      state.lastPage = page;
+    }
+    if (rip.pending && !rip.inGo) clearRipple();   // 别处（取消、跳转）抢先切页：放弃还没落地的涟漪切换
+    PAGES.forEach(function (p) { $('page-' + p).hidden = p !== page; });
+    if (page !== 'budget') closeBudgetSheet();
+    setNavActive(page);
+    $('page-title').textContent = page === 'form' && state.editing ? '编辑' : TITLES[page];
+    window.scrollTo(0, 0);
+  }
+  function setNavActive(page) {
+    document.querySelectorAll('.bottomnav button').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-nav') === page);
+    });
+    placePill();
+  }
+  /** 导航高亮胶囊：滑到当前选中的标签（记一笔页时隐藏） */
+  function placePill() {
+    var pill = $('navpill'), cur = document.querySelector('.bottomnav .navitem.active');
+    if (!pill) return;
+    if (!cur || cur.classList.contains('navadd')) { pill.classList.remove('on'); return; }
+    pill.style.width = cur.offsetWidth + 'px';
+    pill.style.height = cur.offsetHeight + 'px';
+    pill.style.top = cur.offsetTop + 'px';
+    pill.style.transform = 'translateX(' + cur.offsetLeft + 'px)';
+    pill.classList.add('on');
+    if (!pill.classList.contains('ready')) setTimeout(function () { pill.classList.add('ready'); }, 30);   // 第一次摆放不做滑动
+  }
+  window.addEventListener('resize', placePill);
+
+  // ---------- 音效（Web Audio 现场合成，无音频文件） ----------
+  // S2 水滴“嘀”：切页；R3 上扬三音：保存成功。开关存在本机 localStorage('ledger.sound')，默认开；
+  // 读写失败一律当作开。任何异常都静默忽略。测试可替换 sound.play 来观察。
+  var SOUND_KEY = 'ledger.sound';
+  var SOUNDS = {
+    s2: { glide: [1400, 700], dur: 0.12, gain: 0.10 },
+    r3: { notes: [{ f: 660, at: 0, dur: 0.15, gain: 0.11 }, { f: 880, at: 0.08, dur: 0.15, gain: 0.11 }, { f: 1175, at: 0.16, dur: 0.35, gain: 0.12 }] }
+  };
+  var audio = { ctx: null, session: false };
+  function soundOn() {
+    try { return window.localStorage.getItem(SOUND_KEY) !== 'off'; } catch (e) { return true; }
+  }
+  function setSoundOn(on) {
+    try { window.localStorage.setItem(SOUND_KEY, on ? 'on' : 'off'); } catch (e) { /* 存不了就算了 */ }
+  }
+  function audioCtx() {
+    if (audio.ctx) return audio.ctx;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    if (!audio.session) {
+      audio.session = true;
+      try { if (navigator.audioSession) navigator.audioSession.type = 'ambient'; } catch (e) { /* 老版本没有 */ }
+    }
+    audio.ctx = new AC();
+    return audio.ctx;
+  }
+  /** 一个音：sine，8ms 线性起音，指数衰减到 0.0001；freqs 为 [起, 止]（止可省略）。 */
+  function tone(ctx, t0, freqs, dur, peak) {
+    var osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freqs[0], t0);
+    if (freqs[1]) osc.frequency.exponentialRampToValueAtTime(freqs[1], t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(peak, t0 + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g); g.connect(ctx.destination);
+    osc.start(t0); osc.stop(t0 + dur + 0.02);
+  }
+  function synth(name) {
+    try {
+      var ctx = audioCtx(), spec = SOUNDS[name];
+      if (!ctx || !spec) return;
+      if ((ctx.state === 'suspended' || ctx.state === 'interrupted') && ctx.resume) ctx.resume();
+      var t = ctx.currentTime;
+      if (spec.glide) tone(ctx, t, spec.glide, spec.dur, spec.gain);
+      else spec.notes.forEach(function (n) { tone(ctx, t + n.at, [n.f], n.dur, n.gain); });
+    } catch (e) { /* 没有 Web Audio 或出错：静默 */ }
+  }
+  // iOS 只允许在用户手势里启动音频：第一次点按/触摸时就建好 AudioContext、resume，并放一个静音小片段彻底解锁。
+  // 之后保存成功（异步回调里，不在手势中）的 R3 才响得出来。不受开关影响（开关以后打开也立刻可响）。
+  var UNLOCK_EVENTS = ['pointerdown', 'touchend', 'click', 'keydown'];
+  function unlockAudio() {
+    try {
+      var ctx = audioCtx();
+      if (!ctx) { removeUnlock(); return; }
+      if (ctx.resume) ctx.resume();
+      var src = ctx.createBufferSource();
+      src.buffer = ctx.createBuffer(1, 1, 22050);
+      src.connect(ctx.destination);
+      src.start(0);
+      if (ctx.state === 'running') removeUnlock();
+    } catch (e) { removeUnlock(); }
+  }
+  function removeUnlock() {
+    UNLOCK_EVENTS.forEach(function (ev) { document.removeEventListener(ev, unlockAudio, true); });
+  }
+  UNLOCK_EVENTS.forEach(function (ev) { document.addEventListener(ev, unlockAudio, { capture: true, passive: true }); });
+  var sound = { play: synth, synth: synth, unlock: unlockAudio };
+  function playSound(name) {
+    if (!soundOn()) return;
+    try { sound.play(name); } catch (e) { /* 静默 */ }
+  }
+
+  // ---------- 底部导航：薄荷涟漪切页 ----------
+  // 点四个标签之一（且不是当前页）：先从被点的标签中心长出薄荷圆盖住内容区（约 260ms），
+  // 圆盖满时才真正切页（show() 本身仍是同步的），新页淡入 + 轻微放大，涟漪淡出后移除。
+  // 其他任何入口（记一笔、取消/保存、页内跳转、月份箭头）都不经过这里，所以没有涟漪。
+  var RIPPLE = { grow: 260, enter: 220, fade: 240 };
+  var rip = { pending: false, inGo: false, timers: [], el: null, enterEl: null };
+  function clearRipple() {
+    rip.timers.forEach(clearTimeout); rip.timers = [];
+    if (rip.el && rip.el.parentNode) rip.el.parentNode.removeChild(rip.el);
+    rip.el = null; rip.pending = false;
+    if (rip.enterEl) { rip.enterEl.classList.remove('page-enter'); rip.enterEl = null; }
+  }
+  function visiblePage() {
+    for (var i = 0; i < PAGES.length; i++) if (!$('page-' + PAGES[i]).hidden) return PAGES[i];
+    return null;
+  }
+  function navTap(btn) {
+    var page = btn.getAttribute('data-nav');
+    var isTab = page === 'entries' || page === 'report' || page === 'budget' || page === 'settings';
+    clearRipple();                                   // 连点：后一次为准，清掉前一次的涟漪
+    if (!isTab || page === visiblePage()) { go(page); return; }
+    playSound('s2');                                 // 真的要换页（涟漪与减少动态两条路都响一次）
+    if (prefersReducedMotion()) { go(page); return; }
+    var main = document.querySelector('main'), bar = document.querySelector('.topbar'), nav = document.querySelector('.bottomnav');
+    var top = bar.getBoundingClientRect().bottom, bottom = nav.getBoundingClientRect().top;
+    var W = window.innerWidth || document.documentElement.clientWidth || 360;
+    var H = Math.max(bottom - top, 1);
+    var b = btn.getBoundingClientRect();
+    var cx = b.left + b.width / 2, cy = b.top + b.height / 2 - top;   // 相对内容区
+    var r = Math.sqrt(Math.max(cx, W - cx) * Math.max(cx, W - cx) + Math.max(cy, H - cy) * Math.max(cy, H - cy));
+    var clip = document.createElement('div');
+    clip.className = 'ripple-clip';
+    clip.style.top = top + 'px'; clip.style.height = H + 'px';
+    var dot = document.createElement('div');
+    dot.className = 'ripple-dot';
+    dot.style.width = dot.style.height = (2 * r) + 'px';
+    dot.style.left = (cx - r) + 'px'; dot.style.top = (cy - r) + 'px';
+    clip.appendChild(dot);
+    document.body.appendChild(clip);
+    rip.el = clip; rip.pending = true;
+    setNavActive(page);                              // 胶囊与高亮立刻开始滑动
+    void dot.offsetWidth;                            // 触发一次布局，让 transition 生效
+    clip.classList.add('grow');
+    rip.timers.push(setTimeout(function () {
+      rip.inGo = true;
+      try { go(page); } finally { rip.inGo = false; }
+      rip.pending = false;
+      var pg = $('page-' + page);
+      if (pg) { pg.classList.add('page-enter'); rip.enterEl = pg; }
+      clip.classList.add('out');
+      rip.timers.push(setTimeout(function () { if (pg) pg.classList.remove('page-enter'); if (rip.enterEl === pg) rip.enterEl = null; }, RIPPLE.enter + 40));
+      rip.timers.push(setTimeout(function () { if (clip.parentNode) clip.parentNode.removeChild(clip); if (rip.el === clip) rip.el = null; }, RIPPLE.fade + 40));
+    }, RIPPLE.grow));
+  }
+  function go(page) {
+    if (page === 'entries') return loadEntries();
+    if (page === 'form') { state.editing = null; return openForm(null); }
+    if (page === 'report') return loadReportPage();
+    if (page === 'budget') return loadBudget(state.budgetMonth || state.boot.current_month);
+    if (page === 'settings') { state.meSub = null; return loadSettings(); }
+  }
+
+  // ---------- 账目页 ----------
+  function loadEntries() {
+    show('entries');
+    return api('api_listMonth', state.month, state.filter).then(renderEntries).catch(fail);
+  }
+  function renderEntries(data) {
+    var isCurrent = data.month === state.boot.current_month;
+    var html = '<div class="hero"><div class="monthnav"><button data-act="prev" aria-label="上个月">‹</button><strong>' + monthLabel(data.month) +
+      '</strong><button data-act="next" aria-label="下个月">›</button></div></div>';
+    var t = data.totals;
+    if (t) {
+      html += '<div class="summary" id="month-summary"><div class="cols">' +
+        '<div class="col"><div class="k">支出</div><div class="v expense" id="sum-expense">' + money(t.expense_cents) + '</div></div>' +
+        '<div class="col"><div class="k">收入</div><div class="v income" id="sum-income">' + money(t.income_cents) + '</div></div>' +
+        '<div class="col"><div class="k">结余</div><div class="v' + (t.diff_cents < 0 ? ' neg' : '') + '" id="sum-diff">' + money(t.diff_cents) + '</div></div></div>' +
+        (t.pending_count > 0 ? '<div class="incomplete" id="sum-incomplete">统计不完整：有 ' + t.pending_count + ' 笔金额未补全</div>' : '') + '</div>';
+    }
+    html += '<div class="entries-body">';
+    html += applePayAlertHtml() + gmailAlertHtml();
+    var b = data.banner;
+    if (b.pending + b.review > 0) {
+      html += '<button class="banner" data-act="toggle-filter">' + (isCurrent ? '本月' : '这个月') + '有 ' + b.pending +
+        ' 笔待补全、' + b.review + ' 笔待核对' + (state.filter === 'attention' ? '（点击显示全部）' : '（点击只看这些）') + '</button>';
+    }
+    // 其他月份还有待处理账目时的提示（只在“只看待处理”时显示）
+    if (state.filter === 'attention' && data.attention_months) {
+      var others = data.attention_months.filter(function (x) { return x.month !== data.month; });
+      if (others.length) {
+        var n = others.reduce(function (a, x) { return a + x.count; }, 0);
+        var later = others.filter(function (x) { return x.month > data.month; });
+        var nextM = (later.length ? later[0] : others[0]).month;
+        html += '<div class="more-months" id="more-months">其他月份还有 ' + n + ' 笔 <button data-act="next-attention" data-month="' + esc(nextM) + '">下一个月份 ›</button></div>';
+      }
+    }
+    if (!data.days.length) {
+      html += state.filter === 'attention'
+        ? '<div class="empty">没有需要处理的记录</div>'
+        : '<div class="empty"><p>本月还没有记录</p><button class="primary" data-act="new">记一笔</button></div>';
+    }
+    data.days.forEach(function (day) {
+      html += '<div class="day"><h3><span>' + dayLabel(day.date) + '</span><span>支出 ' + money(day.expense_subtotal_cents) + '</span></h3><div class="daycard">';
+      day.entries.forEach(function (e) {
+        var title = e.merchant || e.display_category_name || e.category_name;
+        var tags = '';
+        if (e.is_refund) tags += '<span class="tag">退款</span>';
+        if (e.status === 'dup_review') tags += '<span class="tag">可能重复</span>';
+        if (e.status === 'amount_review') tags += '<span class="tag">待核对金额</span>';
+        var amount = e.amount_cents === null
+          ? '<div class="amt ' + e.type + '">—</div><div class="pending-hint">无法识别金额，需要用户自行查看</div>'
+          : '<div class="amt ' + e.type + '">' + (e.type === 'income' ? '+' : '') + money(e.amount_cents) + '</div>';
+        html += '<button class="entry" data-act="edit" data-id="' + esc(e.id) + '">' + catIcon(e.category_name) + '<div class="main"><div class="title">' +
+          esc(title) + tags + '</div><div class="sub">' + esc(e.display_category_name || e.category_name) +
+          (e.source_name ? ' · ' + esc(e.source_name) : '') + ' · <span class="chan">' + esc(e.channel_label) +
+          '</span></div></div><div>' + amount + '</div></button>';
+      });
+      html += '</div></div>';
+    });
+    $('page-entries').innerHTML = html + '</div>';
+  }
+
+  // ---------- 记一笔 / 编辑：第 1 步选类别（网格），第 2 步填金额（底部抽屉） ----------
+
+  // ===== 数字键盘（纯函数，方便测试）：value 是当前输入的文字，key 是按下的键 =====
+  var KEYPAD = { MAX_INT_DIGITS: 7, MAX_DECIMALS: 2 };   // 最大 9,999,999.99
+  function keypadPress(value, key) {
+    var v = String(value || '');
+    var dot = v.indexOf('.');
+    if (key === 'clear') return '';
+    if (key === 'back') return v.slice(0, -1);
+    if (key === '.') return dot >= 0 ? v : (v === '' ? '0' : v) + '.';
+    if (key === '00') return v === '' || v === '0' ? v : keypadPress(keypadPress(v, '0'), '0');
+    if (/^[0-9]$/.test(key)) {
+      if (v === '0') return key;                                  // 0 后面再按数字：替换，不出现 05
+      if (dot >= 0) return v.length - dot - 1 >= KEYPAD.MAX_DECIMALS ? v : v + key;
+      return v.length >= KEYPAD.MAX_INT_DIGITS ? v : v + key;
+    }
+    return v;
+  }
+  function amountForServer(v) { return String(v || '').replace(/\.$/, ''); }   // “5.”按 5 提交
+  function amountIsPositive(v) { return Number(amountForServer(v)) > 0; }
+
+  function centsToText(cents) {     // 1250 -> "12.5"，1200 -> "12"
+    var t = (Math.abs(cents) / 100).toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+    return t;
+  }
+  function isTextField(el) {
+    return !!(el && ((el.tagName === 'INPUT' && /^(text|datetime-local)$/.test(el.type || 'text')) || el.tagName === 'TEXTAREA'));
+  }
+
+  /** 草稿：面板里正在填写的全部内容。关闭面板回到网格时草稿保留。 */
+  function newDraft(e, candidates) {
+    var isManual = !e || e.channel === 'manual';
+    return {
+      id: e ? e.id : null,
+      entry: e,
+      isManual: isManual,
+      type: e ? e.type : 'expense',
+      amount: e && e.amount_cents !== null ? centsToText(e.amount_cents) : '',
+      category_id: e ? e.category_id : '',
+      is_refund: e ? !!e.is_refund : false,
+      refund_of: e && e.refund_of ? e.refund_of : '',
+      source_sel: e && e.income_source_id ? e.income_source_id : '',   // '' 不填 / 来源 id / '__new__' 新建
+      new_source: '',
+      local_datetime: e ? e.local_datetime : state.boot.now_local,
+      merchant: e ? e.merchant : '',
+      note: e ? e.note : '',
+      pending_message_id: null,
+      expanded: null,         // 当前展开的小标签：date / merchant / refund / source
+      candidates: candidates || []
+    };
+  }
+  function isRefundEntry(d) { return d.isManual ? d.is_refund : !!(d.entry && d.entry.is_refund); }
+  function findCategory(id) {
+    return state.boot.categories.filter(function (c) { return c.id === id; })[0] || null;
+  }
+
+  function openForm(id) {
+    var load = id ? api('api_getEntry', id) : Promise.resolve(null);
+    return Promise.all([load, api('api_refundCandidates')]).then(function (res) {
+      var e = res[0];
+      state.editing = e;
+      state.draft = newDraft(e, res[1]);
+      state.gridType = state.draft.type;
+      show('form');
+      renderFormPage();
+      if (e) openSheet();     // 编辑：直接打开填好内容的面板
+    }).catch(fail);
+  }
+
+  /** 数字键盘按钮（记一笔和预算共用）：keyAct 是按键的 data-act，doneHtml 是右下角“完成”按钮。 */
+  function keypadHtml(keyAct, doneHtml) {
+    var keys = ['1', '2', '3', 'back', '4', '5', '6', 'clear', '7', '8', '9'];
+    function key(k, label, cls, extra) {
+      return '<button class="key' + (cls ? ' ' + cls : '') + '" data-act="' + keyAct + '" data-key="' + k + '"' + (extra || '') + '>' + label + '</button>';
+    }
+    return keys.map(function (k) {
+      if (k === 'back') return key('back', '⌫', 'fn', ' aria-label="退格"');
+      if (k === 'clear') return key('clear', '清空', 'fn');
+      return key(k, k);
+    }).join('') + '<div class="donecell">' + doneHtml + '</div>' + key('.', '.') + key('0', '0') + key('00', '00');
+  }
+
+  function renderFormPage() {
+    var d = state.draft;
+    var sheetCls = 'sheet' + (d.entry && d.entry.deleted_at ? ' readonly' : '');
+    var keypad = keypadHtml('key', '<button class="primary savebtn donekey" data-act="save"><span class="sb-label">完成</span>' +
+      '<svg class="sb-spin" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 1-9 9" /></svg>' +
+      '<svg class="sb-check" viewBox="0 0 24 24" aria-hidden="true"><path pathLength="1" d="M6 12.5l4 4 8-9" /></svg></button>');
+    var actions = '';
+    if (d.entry && d.entry.deleted_at) keypad = '';      // 已删除的账目：没有数字键盘和“完成”，只能恢复
+    if (d.entry && d.entry.deleted_at) actions = '<button class="primary" data-act="restore" data-id="' + esc(d.id) + '">恢复这笔账目</button>';
+    else if (d.entry) actions = '<button class="link danger" data-act="delete" data-id="' + esc(d.id) + '">删除这笔账目</button>';
+    $('page-form').innerHTML =
+      '<div class="formbar"><div class="seg" id="grid-tabs"></div><button class="link cancel" data-act="form-cancel">取消</button></div>' +
+      '<div class="catgrid" id="catgrid"></div>' +
+      // 面板后面的半透明遮罩：点一下 = 关闭面板，不保存（新记录清空已填内容；编辑放弃修改并回到列表）
+      '<div class="sheet-backdrop" id="sheet-backdrop" data-act="sheet-dismiss" hidden></div>' +
+      '<div class="' + sheetCls + '" id="entry-sheet" role="dialog" aria-label="填写金额" hidden>' +
+        '<div class="grab" aria-hidden="true"></div>' +
+        '<div class="sheet-head"><button class="sheet-cat" id="sheet-cat" data-act="back-grid" aria-label="重新选择类别"></button>' +
+        '<div class="sheet-amt" id="sheet-amt"></div></div>' +
+        '<div id="sheet-hint" class="sheet-hint" role="alert" hidden></div>' +
+        '<div id="sheet-warn"></div>' +
+        '<div class="chips" id="chips"></div>' +
+        '<div class="chip-panel" id="chip-panel" hidden></div>' +
+        '<input id="f-note" class="note" maxlength="1000" autocomplete="off" enterkeyhint="done" placeholder="备注（可不填）" value="' + esc(d.note) + '"' +
+          (d.entry && d.entry.deleted_at ? ' readonly' : '') + '>' +
+        '<div class="keypad" id="keypad">' + keypad + '</div>' +
+        '<div class="sheet-actions" id="sheet-actions">' + actions + '</div>' +
+      '</div>' +
+      '<div class="minisheet" id="addcat-box" hidden><div class="mini-card"><label class="field">新类别名称' +
+        '<input id="f-newcat" maxlength="30" autocomplete="off" placeholder="例如：健身"></label>' +
+        '<div class="row"><button class="secondary" data-act="addcat-cancel">取消</button><button class="primary" data-act="addcat-ok">添加</button></div></div></div>';
+    state.saving = false;
+    renderGrid();
+    renderSheetStatic();
+  }
+
+  /** 第 1 步：类别网格（支出/收入标签 + 当前类型的类别 + 最后一个“添加”）。 */
+  function renderGrid() {
+    var d = state.draft, type = state.gridType;
+    function tab(t, label) {
+      var locked = !d.isManual && d.type !== t;     // 自动记录的收支类型不可改
+      return '<button data-act="tab" data-type="' + t + '" class="' + (type === t ? 'on' : '') + '"' + (locked ? ' disabled' : '') + '>' + label + '</button>';
+    }
+    $('grid-tabs').innerHTML = tab('expense', '支出') + tab('income', '收入');
+    var html = categoriesOf(type, d.type === type ? d.category_id : '').map(function (c) {
+      var on = c.id === d.category_id;
+      return '<button class="tile' + (on ? ' on' : '') + '" data-act="pick" data-id="' + esc(c.id) + '" aria-pressed="' + on + '">' +
+        '<span class="ic">' + iconInner(c.name) + '</span><span class="nm">' + esc(c.name) + '</span></button>';
+    }).join('');
+    if (d.isManual) {
+      html += '<button class="tile add" data-act="add-tile"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg></span><span class="nm">添加</span></button>';
+    }
+    $('catgrid').innerHTML = html;
+  }
+
+  /** 第 2 步面板里不随输入变化的部分（只在打开页面时画一次）。 */
+  function renderSheetStatic() {
+    var d = state.draft, e = d.entry, warn = '';
+    if (e && e.deleted_at) warn += '<div class="warnbox">这笔账目已删除</div>';
+    if (e && e.amount_cents === null) warn += '<div class="warnbox">无法识别金额，需要用户自行查看收据后补填</div>';
+    if (e && !e.deleted_at && e.status === 'dup_review') {
+      warn += '<div class="warnbox" id="dup-box">可能与另一个渠道记下的一笔重复（金额相同、时间接近）。确认是两笔不同的消费，请点“两笔都保留”；' +
+        '如果是同一笔，请删除其中一笔。<div class="row"><button class="secondary" data-act="keep-dups" data-id="' + esc(e.id) + '">两笔都保留</button></div></div>';
+    }
+    if (e && !d.isManual) warn += '<p class="muted">记录渠道：' + esc(e.channel_label) + '（自动记录，渠道不可修改）</p>';
+    $('sheet-warn').innerHTML = warn;
+    updateSheetHead();
+    renderChips();
+  }
+  function updateSheetHead() {
+    var d = state.draft, c = findCategory(d.category_id);
+    $('sheet-cat').innerHTML = (c ? catIcon(c.name) + '<span class="nm">' + esc(c.name) + '</span>' : '<span class="nm">选择类别</span>') +
+      '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 10l5 5 5-5"/></svg>';
+    updateAmount();
+  }
+  function updateAmount() {
+    var d = state.draft, el = $('sheet-amt');
+    el.textContent = '$' + (d.amount || '0');
+    el.className = 'sheet-amt ' + d.type + (d.amount ? '' : ' amt-empty');   // 不用 empty：全局 .empty 有 40px 上下留白
+  }
+  function showHint(msg) {
+    var h = $('sheet-hint');
+    h.textContent = msg || ''; h.hidden = !msg;
+  }
+
+  // ----- 小标签（日期 / 商家 / 这是退款 / 来源） -----
+  function dateChipText(d) {
+    var dt = d.local_datetime || '';
+    var time = dt.slice(11, 16);
+    if (dt.slice(0, 10) === state.boot.today_ny) return '今天 ' + time;
+    return (+dt.slice(5, 7)) + ' 月 ' + (+dt.slice(8, 10)) + ' 日 ' + time;
+  }
+  function refundOptions(d) {
+    var list = d.candidates.filter(function (c) { return c.id !== d.id; });
+    return list;
+  }
+  function refundLabel(d) {
+    if (!d.refund_of) return '';
+    var hit = refundOptions(d).filter(function (c) { return c.id === d.refund_of; })[0];
+    if (hit) return (hit.merchant || hit.category_name) + ' ' + money(hit.amount_cents);
+    return (d.entry && d.entry.refund_of_label) || '原交易';
+  }
+  function sourceLabel(d) {
+    if (d.source_sel === '__new__') return String(d.new_source || '').trim();
+    var s = state.boot.sources.filter(function (x) { return x.id === d.source_sel; })[0];
+    return s ? s.name : '';
+  }
+  function chipDefs(d) {
+    var defs = [{ key: 'date', text: dateChipText(d), on: false }];
+    var m = String(d.merchant || '').trim();
+    defs.push({ key: 'merchant', text: m ? '商家：' + m : '商家', on: !!m });
+    if (d.type === 'expense' && (d.isManual || isRefundEntry(d))) {
+      var rl = refundLabel(d);
+      defs.push({ key: 'refund', text: isRefundEntry(d) ? '退款' + (rl ? '：' + rl : '') : '这是退款', on: isRefundEntry(d) });
+    }
+    if (d.type === 'income') {
+      var sl = sourceLabel(d);
+      defs.push({ key: 'source', text: sl ? '来源：' + sl : '来源', on: !!sl });
+    }
+    return defs;
+  }
+  function renderChips() {
+    var d = state.draft;
+    $('chips').innerHTML = chipDefs(d).map(function (c) {
+      return '<button class="chip' + (c.on ? ' on' : '') + (d.expanded === c.key ? ' open' : '') + '" data-act="chip" data-chip="' + c.key + '">' + esc(c.text) + '</button>';
+    }).join('');
+    renderChipPanel();
+  }
+  function updateChipLabels() {       // 输入时只更新标签文字，不重画输入框（不丢焦点）
+    var d = state.draft, btns = $('chips').querySelectorAll('.chip');
+    chipDefs(d).forEach(function (c, i) {
+      if (!btns[i]) return;
+      btns[i].textContent = c.text;
+      btns[i].classList.toggle('on', c.on);
+    });
+  }
+  function renderChipPanel() {
+    var d = state.draft, box = $('chip-panel'), html = '', focusId = null;
+    if (d.expanded === 'date') {
+      html = '<label class="field">日期时间（费城时间）<input id="f-datetime" type="datetime-local" value="' + esc(d.local_datetime) + '"></label>';
+    } else if (d.expanded === 'merchant') {
+      html = '<label class="field">商家／说明<input id="f-merchant" maxlength="200" autocomplete="off" enterkeyhint="done" value="' + esc(d.merchant) + '"></label>';
+      focusId = 'f-merchant';
+    } else if (d.expanded === 'refund') {
+      var opts = '<option value="">不关联原交易</option>' + refundOptions(d).map(function (c) {
+        return '<option value="' + esc(c.id) + '" data-cat="' + esc(c.category_id) + '"' + (d.refund_of === c.id ? ' selected' : '') + '>' +
+          esc(c.date_ny + ' ' + (c.merchant || c.category_name) + ' ' + money(c.amount_cents)) + '</option>';
+      }).join('');
+      if (d.refund_of && !refundOptions(d).some(function (c) { return c.id === d.refund_of; })) {
+        opts += '<option value="' + esc(d.refund_of) + '" selected>' + esc((d.entry && d.entry.refund_of_label) || '原交易') + '</option>';
+      }
+      html = '<label class="field">关联的原交易<select id="f-refund-of">' + opts + '</select></label>' +
+        (d.isManual ? '<button class="link" data-act="refund-off">不是退款</button>' : '');
+    } else if (d.expanded === 'source') {
+      var src = '<option value=""' + (d.source_sel === '' ? ' selected' : '') + '>不填</option>' + state.boot.sources.filter(function (s) {
+        return !s.archived || s.id === d.source_sel;
+      }).map(function (s) {
+        return '<option value="' + esc(s.id) + '"' + (s.id === d.source_sel ? ' selected' : '') + '>' + esc(s.name) + '</option>';
+      }).join('') + '<option value="__new__"' + (d.source_sel === '__new__' ? ' selected' : '') + '>＋ 新建来源…</option>';
+      html = '<label class="field">具体来源<select id="f-source">' + src + '</select></label>' +
+        (d.source_sel === '__new__' ? '<label class="field">新来源名称<input id="f-new-source" maxlength="60" autocomplete="off" enterkeyhint="done" placeholder="例如：兼职 C" value="' + esc(d.new_source) + '"></label>' : '');
+      if (d.source_sel === '__new__') focusId = 'f-new-source';
+    }
+    box.innerHTML = html;
+    box.hidden = !html;
+    if (focusId && $(focusId)) $(focusId).focus();
+    syncTyping();
+  }
+
+  // ----- 抽屉的打开 / 关闭、键盘显示 / 隐藏 -----
+  function openSheet() {
+    var sh = $('entry-sheet'), bd = $('sheet-backdrop');
+    if (!sh) return;
+    state.sheetOpen = true;
+    sh.hidden = false;
+    if (bd) bd.hidden = false;
+    $('page-form').classList.add('sheet-open');
+    void sh.offsetWidth;                // 先让它在屏幕下方就位，再滑上来
+    sh.classList.add('open');
+    if (bd) bd.classList.add('show');
+  }
+  function closeSheet(immediate) {
+    var sh = $('entry-sheet'), bd = $('sheet-backdrop');
+    state.sheetOpen = false;
+    if (document.activeElement && isTextField(document.activeElement)) document.activeElement.blur();
+    if (!sh) return;
+    sh.classList.remove('open');
+    if (bd) bd.classList.remove('show');
+    $('page-form').classList.remove('sheet-open');
+    if (immediate || prefersReducedMotion()) { sh.hidden = true; if (bd) bd.hidden = true; return; }
+    setTimeout(function () { if (!state.sheetOpen) { sh.hidden = true; if (bd) bd.hidden = true; } }, 300);
+  }
+  /**
+   * 点面板外面（遮罩）：关闭面板，不保存、不确认。
+   * - 新记录：清空已填的金额、备注、小标签和选中的类别，留在类别网格；
+   * - 编辑：放弃这次修改，回到账目列表。
+   */
+  function dismissSheet() {
+    var d = state.draft;
+    if (!d || state.saving) return;
+    if (d.id) { show(state.lastPage || 'entries'); return; }
+    var gridType = state.gridType;
+    state.draft = newDraft(null, d.candidates);
+    state.gridType = gridType;
+    closeSheet();
+    $('f-note').value = '';
+    showHint('');
+    renderGrid();
+    renderSheetStatic();
+  }
+  /** 备注或小标签里的文字框有焦点时，自定义键盘让位给手机键盘（样式里只隐藏、不占用/释放空间，避免页面跳动）。 */
+  function syncTyping() {
+    var sh = $('entry-sheet');
+    if (!sh) return;
+    var ae = document.activeElement;
+    var typing = isTextField(ae) && !!ae.closest('#entry-sheet');
+    sh.classList.toggle('typing', typing);
+    $('keypad').setAttribute('aria-hidden', typing ? 'true' : 'false');
+  }
+
+  /** 选中一个类别（网格里点击，或新建类别之后）。面板已打开就直接换类别，没打开就滑出来。 */
+  function selectCategory(id) {
+    var d = state.draft, c = findCategory(id);
+    if (!c) return;
+    if (c.type !== d.type) {            // 换了收支类型：退款、来源这类只属于某一边的设置清掉；金额、备注等保留
+      d.type = c.type;
+      d.is_refund = false; d.refund_of = ''; d.source_sel = ''; d.new_source = ''; d.expanded = null;
+    }
+    d.category_id = id;
+    state.gridType = c.type;
+    renderGrid();
+    updateSheetHead();
+    renderChips();
+    openSheet();
+  }
+
+  function collectForm() {
+    var d = state.draft, refund = d.type === 'expense' && isRefundEntry(d);
+    return {
+      id: d.id,
+      type: d.type,
+      amount: amountForServer(d.amount),
+      is_refund: d.type === 'expense' ? isRefundEntry(d) : false,
+      refund_of: refund ? d.refund_of : '',
+      category_id: d.category_id,
+      income_source_id: d.type === 'income' && d.source_sel !== '__new__' ? d.source_sel : '',
+      new_source_name: d.type === 'income' && d.source_sel === '__new__' ? d.new_source : '',
+      local_datetime: d.local_datetime,
+      merchant: d.merchant,
+      note: d.note,
+      pending_message_id: d.pending_message_id
+    };
+  }
+
+  /** 网格“添加”：弹出小输入框，用已有的 api_addCategory 新建，成功后直接选中。 */
+  function submitNewCategory() {
+    var input = $('f-newcat');
+    api('api_addCategory', state.gridType, input.value).then(function (cat) {
+      return refreshBoot().then(function () {
+        $('addcat-box').hidden = true;
+        toast('已添加');
+        selectCategory(cat.id);
+      });
+    }).catch(fail);
+  }
+
+  function prefersReducedMotion() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+  function delay(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function rand(min, max) { return min + Math.random() * (max - min); }
+
+  /** 从按钮中心迸发一圈粒子（圆点／星星／爱心混合）。 */
+  function burstParticles(btn) {
+    var A = SAVE_ANIM;
+    var rect = btn.getBoundingClientRect();
+    var cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+    var longest = 0;
+    for (var i = 0; i < A.PARTICLE_COUNT; i++) {
+      var shape = A.SHAPES[i % A.SHAPES.length];
+      var p = document.createElement('span');
+      p.className = 'save-particle';
+      p.setAttribute('data-shape', shape);
+      var color = A.COLORS[Math.floor(Math.random() * A.COLORS.length)];
+      p.style.left = cx + 'px'; p.style.top = cy + 'px'; p.style.color = color;
+      if (shape === 'dot') {
+        p.style.width = A.PARTICLE_SIZE_PX + 'px'; p.style.height = A.PARTICLE_SIZE_PX + 'px';
+        p.style.borderRadius = '50%'; p.style.background = color;
+      } else {
+        p.style.fontSize = (A.PARTICLE_SIZE_PX * A.GLYPH_SCALE) + 'px';
+        p.textContent = shape === 'star' ? '\u2605\uFE0E' : '\u2665\uFE0E'; // 带 FE0E：强制用文字样式，不变成彩色表情
+      }
+      document.body.appendChild(p);
+      var angle = (i / A.PARTICLE_COUNT) * Math.PI * 2 + rand(-0.12, 0.12);
+      var dist = A.BURST_PX * rand(A.BURST_JITTER_MIN, A.BURST_JITTER_MAX);
+      var dur = animMs(rand(A.PARTICLE_MIN_MS, A.PARTICLE_MAX_MS));
+      longest = Math.max(longest, dur);
+      if (p.animate) {
+        p.animate([
+          { transform: 'translate(-50%,-50%) translate(0,0) scale(1) rotate(0deg)', opacity: 1 },
+          { transform: 'translate(-50%,-50%) translate(' + (Math.cos(angle) * dist).toFixed(1) + 'px,' + (Math.sin(angle) * dist).toFixed(1) +
+            'px) scale(0.6) rotate(' + Math.round(rand(-180, 180)) + 'deg)', opacity: 0 }
+        ], { duration: dur, easing: 'cubic-bezier(.15,.7,.3,1)', fill: 'forwards' });
+      }
+    }
+    setTimeout(function () {
+      document.querySelectorAll('.save-particle').forEach(function (n) { n.remove(); });
+    }, longest + 80);
+  }
+
+  /** 保存成功：按钮上方飘起一行“−32.00 已记好”（收入 +，支出 −），约 1.1 秒后移除。 */
+  function floatAmount(btn, saved) {
+    if (!saved || saved.amount_cents === null || saved.amount_cents === undefined) return;
+    var abs = Math.abs(saved.amount_cents);
+    var plus = saved.type === 'income' || (saved.type === 'expense' && !!saved.is_refund);   // 退款：钱回来了，算“+”
+    var txt = (plus ? '+' : '\u2212') + Math.floor(abs / 100) + '.' + String(abs % 100).padStart(2, '0') + ' 已记好';
+    var r = btn.getBoundingClientRect();
+    var f = document.createElement('div');
+    f.className = 'save-float';
+    f.textContent = txt;
+    f.style.left = (r.left + r.width / 2) + 'px';
+    f.style.top = (r.top - 6) + 'px';
+    document.body.appendChild(f);
+    setTimeout(function () { if (f.parentNode) f.parentNode.removeChild(f); }, 1100);
+  }
+
+  /** 保存成功：深薄荷绿 + 对勾 + 弹一下 + 粒子（“减少动态效果”时只显示对勾）。 */
+  function playSuccess(btn, reduced, saved) {
+    btn.classList.remove('saving');
+    btn.classList.add('done');
+    playSound('r3');
+    if (reduced) return;
+    floatAmount(btn, saved);
+    if (btn.animate) {
+      btn.animate([{ transform: 'scale(1)' }, { transform: 'scale(' + SAVE_ANIM.BOUNCE_PEAK + ')', offset: 0.5 }, { transform: 'scale(1)' }],
+        { duration: animMs(SAVE_ANIM.BOUNCE_MS), easing: 'ease-in-out' });
+    }
+    burstParticles(btn);
+  }
+
+  /** 保存失败：按钮恢复原样，（可）左右抖一下，提示错误；表单内容原封不动。 */
+  function saveFailed(btn, err, reduced) {
+    state.saving = false;
+    btn.removeAttribute('aria-busy');
+    btn.classList.remove('shrunk', 'saving', 'done');
+    if (!reduced) {
+      btn.classList.remove('shake'); void btn.offsetWidth; btn.classList.add('shake');
+      setTimeout(function () { btn.classList.remove('shake'); }, SAVE_ANIM.SHAKE_MS + 50);
+    }
+    toast((err && err.message) || '没保存成功，再试一次');
+  }
+
+  function saveForm(btn) {
+    if (state.saving) return;                       // 防止重复点击造成重复记账
+    if (!state.draft.id && !amountIsPositive(state.draft.amount)) { showHint('先填金额'); return; }   // 新记录必须有金额，不发请求
+    var input = collectForm();
+    var reduced = prefersReducedMotion();
+    state.saving = true;
+    btn.setAttribute('aria-busy', 'true');
+    btn.style.setProperty('--t-shrink', animMs(SAVE_ANIM.SHRINK_MS) + 'ms');
+    btn.style.setProperty('--t-check', animMs(SAVE_ANIM.CHECK_MS) + 'ms');
+    btn.classList.add('shrunk', 'saving');
+    // 至少等按钮缩成圆形，再显示结果
+    Promise.all([api('api_saveEntry', input), delay(reduced ? 0 : animMs(SAVE_ANIM.SHRINK_MS))]).then(function (res) {
+      var saved = res[0];
+      playSuccess(btn, reduced, saved);
+      return delay(reduced ? SAVE_ANIM.REDUCED_NAV_DELAY_MS : SAVE_ANIM.NAV_DELAY_MS).then(function () {
+        state.month = saved.month_ny;
+        state.filter = 'all';
+        state.saving = false;
+        return refreshBoot().then(loadEntries).catch(fail);
+      });
+    }, function (err) { saveFailed(btn, err, reduced); });
+  }
+
+  // ---------- 圆环图（内嵌 SVG，不用任何图表库） ----------
+  var DONUT_COLORS = ['#5DCAA5', '#F0997B', '#ED93B1', '#FAC775', '#AFA9EC', '#85B7EB'];
+  var DONUT_REST = '#B4B2A9';          // 第 7 项起（以及“其余”合并块）用灰色
+  var RING_MIN_LEN = 20;   // 最小可见弧长：约 2% 圈
+  var BUDGET_COLORS = { ok: '#5DCAA5', near: '#EF9F27', over: '#E24B4A' };
+
+  /**
+   * 圆环切片（纯函数，方便测试）。rows: [{name, cents}]，已按金额从大到小排好。
+   * 只有金额 > 0 的行画进圆环（净退款的行只在图例里列出）。前 6 行各用一种颜色，其余合并成一块灰色。
+   * 每块长度以“千分之一圈”为单位，用整数累计计算，所有块加起来正好 1000。
+   * 返回 {colors: 每一行的颜色（没画进圆环的为 null）, slices: [{name, color, start, len}]}。
+   */
+  function donutSlices(rows) {
+    var total = 0, colors = [], parts = [], rest = null, restCount = 0;
+    rows.forEach(function (r) { if (r.cents > 0) total += r.cents; });
+    var n = 0;
+    rows.forEach(function (r) {
+      if (!(r.cents > 0)) { colors.push(null); return; }
+      if (n < DONUT_COLORS.length) {
+        colors.push(DONUT_COLORS[n]);
+        parts.push({ name: r.name, color: DONUT_COLORS[n], cents: r.cents });
+      } else {
+        colors.push(DONUT_REST);
+        restCount++;
+        if (!rest) { rest = { name: '', color: DONUT_REST, cents: 0 }; parts.push(rest); }
+        rest.cents += r.cents;
+      }
+      n++;
+    });
+    if (rest) rest.name = '其余 ' + restCount + ' 项';
+    var cum = 0, slices = [];
+    parts.forEach(function (p) {
+      var start = Math.floor(cum * 1000 / total);
+      cum += p.cents;
+      var end = Math.floor(cum * 1000 / total);
+      if (end > start) slices.push({ name: p.name, color: p.color, start: start, len: end - start });
+    });
+    return { colors: colors, slices: slices };
+  }
+
+  var RING_C = 'cx="60" cy="60" r="48" fill="none" transform="rotate(-90 60 60)"';
+  /** 圆环 SVG。segs: [{color, start, len}]（单位 1/1000 圈）；centerHtml 叠在圆环中间。 */
+  function donutHtml(segs, label, centerHtml, extraCls) {
+    var svg = '<svg viewBox="0 0 120 120" role="img" aria-label="' + esc(label) + '">' +
+      '<circle class="ring-track" ' + RING_C + ' pathLength="1000"/>' +
+      segs.map(function (s) {
+        // 整圈：画成不带 dasharray 的完整圆，避免 12 点钟方向出现接缝
+        if (s.len >= 1000 && !s.start) return '<circle class="donut-seg full' + (s.cls ? ' ' + s.cls : '') + '" ' + RING_C + ' stroke="' + s.color + '" data-len="1000"/>';
+        return '<circle class="donut-seg' + (s.cls ? ' ' + s.cls : '') + '" ' + RING_C + ' pathLength="1000" stroke="' + s.color +
+          '" stroke-dasharray="' + s.len + ' 1000" stroke-dashoffset="' + (-s.start) + '" data-len="' + s.len + '"/>';
+      }).join('') + '</svg>';
+    return '<div class="donut' + (extraCls ? ' ' + extraCls : '') + '">' + svg + '<div class="ring-center">' + centerHtml + '</div></div>';
+  }
+  function centerHtml(k, v, vCls, vId) {
+    return '<span class="rc-k">' + esc(k) + '</span><strong' + (vId ? ' id="' + vId + '"' : '') + (vCls ? ' class="' + vCls + '"' : '') + '>' + v + '</strong>';
+  }
+  /** 图例：每一行 色块 + 名称 + 金额 · 百分比（百分比沿用月报规则，由服务器算好）。 */
+  function legendRows(rows, colors, withSources) {
+    return rows.map(function (r, i) {
+      var sw = colors && colors[i] ? '<i class="sw" style="background:' + colors[i] + '"></i>' : '<i class="sw none"></i>';
+      var html = '<div class="lg-row">' + sw + '<span class="lg-name">' + esc(r.name) + (r.net_refund ? '（净退款）' : '') +
+        '</span><span class="lg-val">' + money(r.cents) + (r.percent_tenths !== null && r.percent_tenths !== undefined ? ' · ' + pct(r.percent_tenths) : '') + '</span></div>';
+      if (withSources && r.sources && r.sources.length) {
+        html += '<button class="link" data-act="toggle-sources">展开来源</button><div class="sources" hidden>' +
+          legendRows(r.sources, null, false) + '</div>';
+      }
+      return html;
+    }).join('');
+  }
+  function donutCard(id, title, section, centerK, withSources, emptyText) {
+    var ds = donutSlices(section.rows);
+    var label = title + '：' + section.rows.map(function (r) { return r.name + ' ' + money(r.cents) + (r.percent_tenths !== null ? ' ' + pct(r.percent_tenths) : ''); }).join('，');
+    return '<div class="card chart-card" id="' + id + '"><h2>' + title + '</h2>' +
+      donutHtml(ds.slices, label, centerHtml(centerK, money(section.total_cents))) +
+      (section.rows.length ? '<div class="legend">' + legendRows(section.rows, ds.colors, withSources) + '</div>' : '<p class="muted center">' + emptyText + '</p>') +
+      '</div>';
+  }
+
+  // ---------- 报表：月报 / 账单 ----------
+  function reportTabsHtml() {
+    function b(tab, label) { return '<button data-act="rtab" data-tab="' + tab + '" class="' + (state.reportTab === tab ? 'on' : '') + '">' + label + '</button>'; }
+    return '<div class="seg" id="report-tabs">' + b('month', '月报') + b('bills', '账单') + b('savings', '储蓄') + b('habits', '消费习惯') + '</div>';
+  }
+  function loadReportPage() {
+    if (state.reportTab === 'savings') return loadSavings();
+    if (state.reportTab === 'habits') return loadSpendingHabits();
+    if (state.reportTab === 'bills') return loadBills();
+    return loadReport(state.reportMonth || state.boot.report_default_month);
+  }
+  function loadReport(month) {
+    state.reportTab = 'month';
+    state.reportMonth = month;
+    show('report');
+    var ticket = ++state.insightsRequest;
+    return api('api_getReport', month).then(function (r) {
+      if (ticket === state.insightsRequest && reportSectionActive('month')) renderReport(r);
+    }).catch(fail);
+  }
+  function renderReport(r) {
+    var html = reportTabsHtml() + '<div class="monthnav"><button data-act="rprev" aria-label="上个月">‹</button><strong>' + monthLabel(r.month) +
+      '</strong><button data-act="rnext" aria-label="下个月">›</button></div>';
+    html += '<p class="muted">' + (r.generated_on ? '生成于 ' + (+r.generated_on.slice(5, 7)) + ' 月 1 日' : '本月进行中') +
+      (r.last_changed_local ? '，最后更新于 ' + esc(r.last_changed_local.replace('T', ' ')) : '') + '</p>';
+    if (r.pending_count > 0) {
+      html += '<button class="banner" data-act="goto-pending" data-month="' + esc(r.month) + '">有 ' + r.pending_count +
+        ' 笔金额未补全，以下统计不完整（点击前往补全）</button>';
+    }
+    html += donutCard('report-expense', '支出', r.expense, '总支出', false, '没有支出');
+    html += donutCard('report-income', '收入', r.income, '总收入', true, '没有收入');
+    var c = r.comparison;
+    var cmpRows = [{ name: '收入', cents: c.income_cents }, { name: '支出', cents: c.expense_cents }];
+    var cmp = donutSlices(cmpRows);
+    var cmpColors = [BUDGET_COLORS.ok, DONUT_COLORS[1]];
+    var segs = cmp.slices.map(function (s) { return { color: s.name === '收入' ? cmpColors[0] : cmpColors[1], start: s.start, len: s.len }; });
+    html += '<div class="card chart-card" id="report-compare"><h2>收支对比</h2>' +
+      donutHtml(segs, '收支对比：收入 ' + money(c.income_cents) + '，支出 ' + money(c.expense_cents) + '，结余 ' + money(c.diff_cents),
+        centerHtml('结余', money(c.diff_cents), c.diff_cents < 0 ? 'neg' : '', 'diff')) +
+      '<div class="legend">' +
+      '<div class="lg-row"><i class="sw" style="background:' + cmpColors[0] + '"></i><span class="lg-name">收入</span><span class="lg-val">' + money(c.income_cents) + '</span></div>' +
+      '<div class="lg-row"><i class="sw" style="background:' + cmpColors[1] + '"></i><span class="lg-name">支出</span><span class="lg-val">' + money(c.expense_cents) + '</span></div>' +
+      '<div class="lg-row"><i class="sw none"></i><span class="lg-name">结余（收入 − 支出）</span><span class="lg-val' + (c.diff_cents < 0 ? ' neg' : '') + '">' + money(c.diff_cents) + '</span></div>' +
+      '</div></div>';
+    if (r.budget) html += budgetSummaryCard(r);
+    $('page-report').innerHTML = html;
+  }
+  /** 月报里的“本月预算小结”（spec 7A.2）：该月当时有效的预算；一句白话总结 + 每项的已用 / 剩余或超出。 */
+  function budgetSummaryCard(r) {
+    var v = r.budget.view;
+    var items = (v.total ? [v.total] : []).concat(v.categories);
+    var title = r.is_current_month ? '本月预算小结' : (+r.month.slice(5, 7)) + ' 月预算小结';
+    return '<div class="card" id="report-budget"><h2>' + title + '</h2><p class="bsum">' + esc(r.budget.summary) + '</p>' +
+      items.map(function (it) {
+        var over = it.remaining_cents < 0;
+        return '<div class="list-item"><span>' + esc(it.name) + '<br><span class="muted">已用 ' + money(it.used_cents) + ' / ' + money(it.budget_cents) + '</span></span>' +
+          '<span class="' + (over ? 'neg' : '') + '">' + (over ? '超出 ' + money(-it.remaining_cents) : '剩余 ' + money(it.remaining_cents)) + '</span></div>';
+      }).join('') +
+      (v.pending_count > 0 ? '<p class="incomplete-hint">有 ' + v.pending_count + ' 笔未补全，预算统计不完整</p>' : '') + '</div>';
+  }
+
+  // ----- 账单：月账单（某年每个月）/ 年账单（每一年） -----
+  function loadBills() {
+    state.reportTab = 'bills';
+    show('report');
+    var ticket = ++state.insightsRequest;
+    if (state.billsTab === 'year') return api('api_getYearBills').then(function (r) {
+      if (ticket === state.insightsRequest && reportSectionActive('bills')) renderYearBills(r);
+    }).catch(fail);
+    var year = state.billsYear || state.boot.current_month.slice(0, 4);
+    state.billsYear = year;
+    return api('api_getMonthBills', year).then(function (r) {
+      if (ticket === state.insightsRequest && reportSectionActive('bills')) renderMonthBills(r);
+    }).catch(fail);
+  }
+  function billsTabsHtml() {
+    function b(tab, label) { return '<button data-act="btab" data-tab="' + tab + '" class="' + (state.billsTab === tab ? 'on' : '') + '">' + label + '</button>'; }
+    return '<div class="seg small" id="bills-tabs">' + b('month', '月账单') + b('year', '年账单') + '</div>';
+  }
+  function billHero(k, diff, inc, exp, kInc, kExp) {
+    return '<div class="bill-hero" id="bill-hero"><div class="k">' + k + '</div><div class="big' + (diff < 0 ? ' negw' : '') + '">' + money(diff) + '</div>' +
+      '<div class="cols"><div><div class="k">' + kInc + '</div><div class="v">' + money(inc) + '</div></div>' +
+      '<div><div class="k">' + kExp + '</div><div class="v">' + money(exp) + '</div></div></div></div>';
+  }
+  var CHEVRON = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+  function billTable(firstCol, rows) {
+    return '<div class="bill-table"><div class="bt-head"><span>' + firstCol + '</span><span>收入</span><span>支出</span><span>结余</span><span></span></div>' + rows + '</div>';
+  }
+  function billRow(act, attr, label, r) {
+    return '<button class="bt-row" data-act="' + act + '" ' + attr + '><span class="bt-k">' + label + '</span><span>' + money(r.income_cents) +
+      '</span><span>' + money(r.expense_cents) + '</span><span class="' + (r.diff_cents < 0 ? 'neg' : '') + '">' + money(r.diff_cents) + '</span>' + CHEVRON + '</button>';
+  }
+  var BILLS_FOOTNOTE = '<p class="muted footnote" id="bills-footnote">年账单为自然年（1.1–12.31），按费城时间</p>';
+  function renderMonthBills(b) {
+    var cur = b.current_month.slice(0, 4);
+    var minYear = b.years.length ? b.years[b.years.length - 1] : cur;
+    var html = reportTabsHtml() + billsTabsHtml() +
+      '<div class="monthnav"><button data-act="yprev" aria-label="上一年"' + (b.year <= minYear ? ' disabled' : '') + '>‹</button><strong>' + b.year +
+      ' 年</strong><button data-act="ynext" aria-label="下一年"' + (b.year >= cur ? ' disabled' : '') + '>›</button></div>';
+    html += billHero('年结余', b.diff_cents, b.income_cents, b.expense_cents, '年收入', '年支出');
+    if (b.pending_count > 0) html += '<p class="incomplete-hint" id="bills-incomplete">有 ' + b.pending_count + ' 笔金额未补全，统计不完整</p>';
+    html += b.months.length
+      ? billTable('月份', b.months.map(function (m) { return billRow('bill-month', 'data-month="' + esc(m.month) + '"', (+m.month.slice(5, 7)) + ' 月', m); }).join(''))
+      : '<div class="empty">这一年还没有可显示的月份</div>';
+    $('page-report').innerHTML = html + BILLS_FOOTNOTE;
+  }
+  function renderYearBills(y) {
+    var html = reportTabsHtml() + billsTabsHtml();
+    html += billHero('总结余', y.diff_cents, y.income_cents, y.expense_cents, '总收入', '总支出');
+    if (y.pending_count > 0) html += '<p class="incomplete-hint" id="bills-incomplete">有 ' + y.pending_count + ' 笔金额未补全，统计不完整</p>';
+    html += y.years.length
+      ? billTable('年份', y.years.map(function (r) { return billRow('bill-year', 'data-year="' + esc(r.year) + '"', r.year, r); }).join(''))
+      : '<div class="empty">还没有账目</div>';
+    $('page-report').innerHTML = html + BILLS_FOOTNOTE;
+  }
+
+  // ---------- 储蓄：独立存入记录与本月账本估算 ----------
+  function reportSectionActive(tab) {
+    return state.reportTab === tab && !$('page-report').hidden;
+  }
+  function loadSavings() {
+    show('report');
+    var ticket = ++state.insightsRequest, writeEpoch = state.savingsWriteEpoch;
+    $('page-report').innerHTML = reportTabsHtml() + '<p role="status">正在读取储蓄计划…</p>';
+    return api('api_getSavings').then(function (view) {
+      if (ticket !== state.insightsRequest || writeEpoch !== state.savingsWriteEpoch || !reportSectionActive('savings')) return;
+      state.savingsView = view;
+      if (state.savingsDepositIntent && view.goals.some(function (g) {
+        return g.contributions.some(function (c) { return c.id === state.savingsDepositIntent.payload.request_id; });
+      })) { state.savingsDepositIntent = null; state.savingsEditor = null; }
+      renderSavings(view);
+    }).catch(function (err) {
+      if (ticket !== state.insightsRequest || writeEpoch !== state.savingsWriteEpoch || !reportSectionActive('savings')) return;
+      $('page-report').innerHTML = reportTabsHtml() + '<div class="warnbox">' + esc(err.message || '暂时无法读取储蓄计划') + '</div><button class="secondary" data-act="savings-refresh">重新读取</button>';
+    });
+  }
+  function savingsGoalById(id) {
+    return state.savingsView.goals.filter(function (g) { return g.id === id; })[0];
+  }
+  function savingsBasis(side) {
+    if (side.source === 'manual') return '本月手动预估';
+    if (side.source === 'missing') return '请先填写月度预估';
+    return '最近 3 个完整月中，有数据的 ' + side.history.month_count + ' 个月平均';
+  }
+  function savingsMoneyInput(id, label, value, required, help) {
+    return '<label for="' + id + '">' + label + (required ? '（必填）' : '') + '</label>' +
+      '<input id="' + id + '" name="' + id + '" type="text" inputmode="decimal" autocomplete="off" value="' + esc(value) + '"' + (required ? ' required' : '') + '>' +
+      (help ? '<p class="muted savings-help">' + help + '</p>' : '');
+  }
+  function renderSavings(view) {
+    state.savingsView = view;
+    if (!reportSectionActive('savings')) return;
+    var f = view.forecast;
+    var html = reportTabsHtml() + '<p class="muted">' + monthLabel(view.current_month) + ' · 截至 ' + esc(view.today_ny) + ' <button class="link" data-act="savings-refresh"' + (state.savingsBusy ? ' disabled' : '') + '>刷新</button></p>';
+    if (!view.ready) html += '<div class="warnbox" role="status">储蓄功能还没有启用：请先在脚本编辑器里重新运行一次 setupLedger，再回来设置。<button class="link" data-act="savings-refresh">我已设置，重新读取</button></div>';
+    html += '<div class="card savings-forecast"><h2>月底可用金额 · 账本估算</h2><div class="savings-big">' + money(f.month_end_available_cents) + '</div>' +
+      '<p class="muted">按账本记录估算全月收支，再预留所有进行中目标的月度存款。实际可用金额请以自己的资金情况为准。</p>' +
+      '<dl class="savings-breakdown"><div><dt>预计月收入</dt><dd>' + money(f.income.projected_cents) + '</dd></div>' +
+      '<div><dt>预计月支出</dt><dd>− ' + money(f.expense.projected_cents) + '</dd></div>' +
+      '<div><dt>全部目标月度存款</dt><dd>− ' + money(f.planned_savings_cents) + '</dd></div></dl>' +
+      '<p class="muted">收入依据：' + esc(savingsBasis(f.income)) + '。<br>支出依据：' + esc(savingsBasis(f.expense)) + '；与本月已记支出比较后取较大值。</p>' +
+      '<p class="muted">本月已记收入 ' + money(f.income.actual_to_date_cents) + '，支出 ' + money(f.expense.actual_to_date_cents) + '。已完成目标不再预留月度存款。</p>';
+    if (!f.can_estimate) html += '<p class="incomplete-hint" role="status">还缺少' + (f.needs_income_estimate ? '月收入预估' : '') + (f.needs_income_estimate && f.needs_expense_estimate ? '和' : '') + (f.needs_expense_estimate ? '月支出预估' : '') + '，填写后再计算。0 表示确实没有，留空表示未知。</p>';
+    if (f.incomplete) html += '<p class="incomplete-hint" role="status">有 ' + f.pending_count + ' 笔相关账目金额未补全，估算不完整。</p>';
+    if (f.can_estimate && f.monthly_net_cents < 0) html += '<p class="incomplete-hint">预计支出已超过收入 ' + money(-f.monthly_net_cents) + '，可存金额及月底可用金额按 0 显示。</p>';
+    html += '<details' + (!f.can_estimate && view.ready ? ' open' : '') + '><summary>填写 / 调整本月预估</summary><form id="savings-estimates-form" class="savings-form"><fieldset' + (!view.ready || state.savingsBusy ? ' disabled' : '') + '>' +
+      savingsMoneyInput('sg-income', '预计本月总收入（美元）', view.estimates.income_cents === null ? '' : centsToText(view.estimates.income_cents), false, '填写后优先采用；清空则恢复历史依据，没有历史时需重新预估。0 可用。') +
+      (f.expense.source !== 'history' ? savingsMoneyInput('sg-expense', '预计本月总支出（美元）', view.estimates.expense_cents === null ? '' : centsToText(view.estimates.expense_cents), false, '没有完整月支出历史时使用；清空表示未知。0 可用。') : '<p class="muted">支出已有完整月历史，使用历史平均与本月已记支出中的较大值。</p>') +
+      '<button type="submit" class="primary">保存本月预估</button></fieldset><p class="savings-error" role="alert" hidden></p></form></details></div>';
+    html += '<div class="savings-heading"><h2>我的储蓄目标</h2><button class="secondary" data-act="savings-goal"' + (!view.ready || state.savingsBusy ? ' disabled' : '') + '>新建目标</button></div>';
+    if (state.savingsDepositIntent && !state.savingsEditor && view.ready) html += '<div class="warnbox">上一笔存入结果尚未确认。<button class="link" data-act="savings-deposit">继续确认这笔存入</button></div>';
+    if (state.savingsEditor && view.ready) html += savingsEditorHtml();
+    if (!view.goals.length) html += '<div class="card"><p>还没有储蓄目标。为旅行、应急金或想买的东西，分别建立计划吧。</p><p class="muted">存入记录独立保存，不计入日常消费。</p></div>';
+    view.goals.forEach(function (g) {
+      var recommendation = g.completed ? '目标已完成，继续存入仍会更新已存金额。' :
+        g.target_date ? '目标日期 ' + esc(g.target_date) + (g.overdue ? '（已过期）' : '') + ' · 建议每月存 ' + money(g.required_monthly_cents) +
+          (!g.monthly_plan_meets_deadline ? '<br>当前月计划可能无法按期完成，可调整月存款或目标日期。' : '') :
+          '按当前计划，还需约 ' + g.estimated_months + ' 个月，预计 ' + esc(g.estimated_completion_month) + ' 达成。';
+      html += '<article class="card savings-goal"><div class="savings-heading"><h3>' + esc(g.name) + '</h3><span class="savings-status">' + (g.completed ? '已完成' : '进行中') + '</span></div>' +
+        '<p class="savings-amount">已存 ' + money(g.saved_cents) + ' / ' + money(g.target_cents) + '</p>' +
+        '<progress max="1000" value="' + g.progress_tenths + '" aria-label="' + esc(g.name) + '储蓄进度">' + pct(g.progress_tenths) + '</progress><p class="muted">' + pct(g.progress_tenths) + ' · 每月计划 ' + money(g.monthly_cents) + '</p>' +
+        '<p class="muted">' + recommendation + '</p><div class="savings-actions"><button class="primary" data-act="savings-deposit" data-id="' + esc(g.id) + '"' + (!view.ready || state.savingsBusy ? ' disabled' : '') + '>记录存入</button>' +
+        '<button class="secondary" data-act="savings-goal" data-id="' + esc(g.id) + '"' + (!view.ready || state.savingsBusy ? ' disabled' : '') + '>编辑目标</button></div>';
+      if (g.contributions.length) html += '<details><summary>存入记录（' + g.contributions.length + ' 笔）</summary><ul class="savings-deposits">' + g.contributions.map(function (c) {
+        return '<li><span>' + esc(c.date_ny) + '</span><strong>+' + money(c.amount_cents) + '</strong></li>';
+      }).join('') + '</ul></details>';
+      html += '</article>';
+    });
+    $('page-report').innerHTML = html;
+  }
+  function openSavingsEditor(type, id) {
+    if (state.savingsBusy || !state.savingsView || !state.savingsView.ready) return;
+    if (state.savingsDepositIntent) {
+      type = 'deposit'; id = state.savingsDepositIntent.payload.goal_id;
+      toast('上一笔存入结果待确认，请先重试确认');
+    }
+    state.savingsEditor = { type: type, goalId: id || null };
+    renderSavings(state.savingsView);
+    var form = $('savings-' + type + '-form');
+    if (form) { form.scrollIntoView({ block: 'center', behavior: 'auto' }); var field = form.querySelector('input:not(:disabled)'); if (field) field.focus(); }
+  }
+  function savingsEditorHtml() {
+    var editor = state.savingsEditor, g = savingsGoalById(editor.goalId);
+    if (editor.type === 'goal') {
+      return '<form id="savings-goal-form" class="card savings-form"><h3>' + (g ? '编辑目标' : '新建目标') + '</h3><fieldset' + (state.savingsBusy ? ' disabled' : '') + '>' +
+        '<label for="sg-name">目标名称（必填）</label><input id="sg-name" maxlength="60" required value="' + esc(g ? g.name : '') + '">' +
+        savingsMoneyInput('sg-target', '目标总额（美元）', g ? centsToText(g.target_cents) : '', true) +
+        savingsMoneyInput('sg-start', '开始时已存金额（美元）', g ? centsToText(g.starting_saved_cents) : '', true, g ? '仅修改开始时的余额；另外记录的 ' + money(g.deposited_cents) + ' 存入会继续累计。' : '还没有存款请填写 0。') +
+        '<label for="sg-date">希望完成的日期（选填）</label><input id="sg-date" type="date" value="' + esc(g ? g.target_date : '') + '">' +
+        savingsMoneyInput('sg-monthly', '每月计划存款（美元）', g ? centsToText(g.monthly_cents) : '', false, '填了日期时可留空，保存后按剩余金额和月份建议月存款；没有日期时，未完成的目标需要填写大于 0 的月存款。') +
+        '<div class="savings-actions"><button type="submit" class="primary">保存目标</button><button type="button" class="secondary" data-act="savings-cancel">取消</button></div></fieldset><p class="savings-error" role="alert" hidden></p></form>';
+    }
+    if (!g) return '';
+    var intent = state.savingsDepositIntent, payload = intent && intent.payload;
+    return '<form id="savings-deposit-form" class="card savings-form"><h3>存入：' + esc(g.name) + '</h3><p class="muted">只更新这个目标的进度，不计入日常消费。</p>' +
+      '<fieldset' + (state.savingsBusy || intent ? ' disabled' : '') + '>' + '<label for="sg-deposit-amount">本次存入（美元，必填）</label><input id="sg-deposit-amount" type="text" inputmode="decimal" required pattern="[0-9]{1,9}([.][0-9]{1,2})?" title="请填写大于 0 的金额，最多两位小数，例如 12.34" value="' + esc(payload ? payload.amount : '') + '">' +
+      '<label for="sg-deposit-date">存入日期（费城时间）</label><input id="sg-deposit-date" type="date" required max="' + esc(state.savingsView.today_ny) + '" value="' + esc(payload ? payload.date_ny : state.savingsView.today_ny) + '"></fieldset>' +
+      (intent ? '<p class="incomplete-hint">上一笔存入的结果尚未确认。重试会使用同一笔记录，不会重复累计。确认后才可记录新的一笔。</p>' : '') +
+      '<div class="savings-actions"><button type="submit" class="primary"' + (state.savingsBusy ? ' disabled' : '') + '>' + (intent ? '重试确认这笔存入' : '确认存入') + '</button><button type="button" class="secondary" data-act="savings-cancel"' + (state.savingsBusy ? ' disabled' : '') + '>收起</button></div><p class="savings-error" role="alert" hidden></p></form>';
+  }
+  function savingsRequestId() {
+    return window.crypto && typeof window.crypto.randomUUID === 'function' ? window.crypto.randomUUID() : 'deposit_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  }
+  function setSavingsFormBusy(form, busy) {
+    form.setAttribute('aria-busy', busy ? 'true' : 'false');
+    form.querySelectorAll('fieldset').forEach(function (el) { el.disabled = busy || (form.id === 'savings-deposit-form' && !!state.savingsDepositIntent); });
+    form.querySelectorAll('button, input').forEach(function (el) { el.disabled = busy; });
+    // An uncertain deposit is immutable: retries must retain exactly the same payload.
+    if (!busy && form.id === 'savings-deposit-form' && state.savingsDepositIntent) {
+      form.querySelectorAll('input').forEach(function (el) { el.disabled = true; });
+    }
+  }
+  document.addEventListener('submit', function (ev) {
+    var form = ev.target;
+    if (!form.classList.contains('savings-form')) return;
+    ev.preventDefault();
+    if (state.savingsBusy || !state.savingsView || !state.savingsView.ready) return;
+    var rpc, input;
+    if (form.id === 'savings-goal-form') {
+      rpc = 'api_saveSavingsGoal';
+      input = { name: $('sg-name').value, target_amount: $('sg-target').value, starting_saved_amount: $('sg-start').value,
+        monthly_amount: $('sg-monthly').value, target_date: $('sg-date').value };
+      if (state.savingsEditor.goalId) input.id = state.savingsEditor.goalId;
+    } else if (form.id === 'savings-deposit-form') {
+      rpc = 'api_recordSavingsContribution';
+      if (!state.savingsDepositIntent && !(Number($('sg-deposit-amount').value) > 0)) {
+        var amountError = form.querySelector('.savings-error');
+        amountError.textContent = '存入金额请填写大于 0 的金额，例如 12.34'; amountError.hidden = false; return;
+      }
+      if (!state.savingsDepositIntent) state.savingsDepositIntent = { payload: {
+        request_id: savingsRequestId(), goal_id: state.savingsEditor.goalId, amount: $('sg-deposit-amount').value, date_ny: $('sg-deposit-date').value
+      }};
+      input = state.savingsDepositIntent.payload;
+    } else if (form.id === 'savings-estimates-form') {
+      rpc = 'api_saveSavingsEstimates';
+      input = { month: state.savingsView.current_month, income_amount: $('sg-income').value };
+      if ($('sg-expense')) input.expense_amount = $('sg-expense').value;
+    } else return;
+    state.savingsBusy = true;
+    setSavingsFormBusy(form, true);
+    var error = form.querySelector('.savings-error'); error.hidden = true;
+    api(rpc, input).then(function (view) {
+      // Invalidate savings reads started before this authoritative response, including after leaving and returning.
+      state.savingsWriteEpoch += 1;
+      state.savingsBusy = false;
+      state.savingsView = view;
+      if (rpc === 'api_recordSavingsContribution') state.savingsDepositIntent = null;
+      if (rpc !== 'api_saveSavingsEstimates') state.savingsEditor = null;
+      renderSavings(view);
+      toast('已保存');
+      refreshBoot().catch(function () {}); // 储蓄规则已在写入后运行，刷新小猫红点；刷新失败不影响保存结果。
+    }).catch(function (err) {
+      state.savingsBusy = false;
+      if (form.isConnected) {
+        setSavingsFormBusy(form, false);
+        error.textContent = err.message || '保存失败，请重试'; error.hidden = false;
+        if (rpc === 'api_recordSavingsContribution') {
+          form.querySelector('button[type="submit"]').textContent = '重试确认这笔存入';
+          error.textContent += '。请重试确认同一笔存入，确认后再记录新的一笔。';
+        }
+      }
+      if (!form.isConnected && reportSectionActive('savings')) renderSavings(state.savingsView);
+      fail(err);
+    });
+  });
+
+  // ---------- 消费习惯：真实类别；退款保留负数 ----------
+  /** 分组：手动选过类别的按类别；仍是“未分类”的 Apple Pay 账目单独算作“Apple Pay”。 */
+  function habitGroup(e) {
+    var cat = findCategory(e.category_id);
+    if (e.channel === 'apple_pay' && cat && cat.system_key === 'uncategorized') return { key: 'channel:apple_pay', name: 'Apple Pay' };
+    return { key: e.category_id || '', name: e.category_name };
+  }
+  function categoryTotalsThrough(list, cutoff) {
+    var rows = Object.create(null), pending = 0;
+    list.days.forEach(function (day) {
+      if (day.date > cutoff) return;
+      day.entries.forEach(function (e) {
+        if (e.type !== 'expense') return;
+        if (e.amount_cents === null || e.amount_cents === undefined) { pending++; return; }
+        var group = habitGroup(e);
+        if (!rows[group.key]) rows[group.key] = { id: group.key, name: group.name, cents: 0 };
+        rows[group.key].cents += e.amount_cents;
+      });
+    });
+    return { rows: rows, pending_count: pending };
+  }
+  function loadSpendingHabits() {
+    show('report');
+    var ticket = ++state.insightsRequest;
+    $('page-report').innerHTML = reportTabsHtml() + '<p role="status">正在读取消费习惯…</p>';
+    // Bootstrap supplies the New York date; refresh it so an open page also handles a new month.
+    return refreshBoot().then(function (boot) {
+      var month = boot.current_month, today = boot.now_local.slice(0, 10), previous = addMonths(month, -1);
+      var lastDay = new Date(Date.UTC(+previous.slice(0, 4), +previous.slice(5, 7), 0)).getUTCDate();
+      var cutoff = previous + '-' + String(Math.min(+today.slice(8, 10), lastDay)).padStart(2, '0');
+      var months = [-3, -2, -1].map(function (n) { return addMonths(month, n); });
+      // 三个完整月也逐笔读取，才能和同期对比用同一种分组（Apple Pay 未分类单独一行）
+      return Promise.all([api('api_listMonth', month, 'all'), api('api_listMonth', previous, 'all')].concat(months.map(function (m) { return api('api_listMonth', m, 'all'); }))).then(function (res) {
+        if (ticket !== state.insightsRequest || !reportSectionActive('habits')) return;
+        var reports = res.slice(2).map(function (list, i) { var t = categoryTotalsThrough(list, '9999-12-31'); t.month = months[i]; return t; });
+        renderSpendingHabits(today, cutoff, categoryTotalsThrough(res[0], today), categoryTotalsThrough(res[1], cutoff), reports);
+      });
+    }).catch(function (err) {
+      if (ticket !== state.insightsRequest || !reportSectionActive('habits')) return;
+      $('page-report').innerHTML = reportTabsHtml() + '<div class="warnbox">' + esc(err.message || '暂时无法读取消费习惯') + '</div><button class="secondary" data-act="habits-refresh">重新读取</button>';
+    });
+  }
+  function renderSpendingHabits(today, cutoff, current, previous, reports) {
+    var rows = Object.create(null);
+    Object.keys(current.rows).concat(Object.keys(previous.rows)).forEach(function (key) { rows[key] = current.rows[key] || previous.rows[key]; });
+    var keys = Object.keys(rows).sort(function (a, b) { return (current.rows[b] ? current.rows[b].cents : 0) - (current.rows[a] ? current.rows[a].cents : 0); });
+    var html = reportTabsHtml() + '<div class="card"><h2>本月与上月同期</h2><p class="muted">' + esc(today.slice(0, 7)) + '-01 至 ' + esc(today) + '<br>' + esc(cutoff.slice(0, 7)) + '-01 至 ' + esc(cutoff) + '（上月天数不足时取月末）</p>';
+    if (current.pending_count + previous.pending_count > 0) html += '<p class="incomplete-hint">比较区间有 ' + (current.pending_count + previous.pending_count) + ' 笔支出金额未补全，比较不完整。</p>';
+    html += keys.length ? '<div class="insights-scroll" role="region" aria-label="类别同期对比，可横向滚动" tabindex="0"><table class="insights-table"><thead><tr><th scope="col">消费类别</th><th scope="col">本月同期</th><th scope="col">上月同期</th><th scope="col">金额变化</th></tr></thead><tbody>' + keys.map(function (key) {
+      var a = current.rows[key] ? current.rows[key].cents : 0, b = previous.rows[key] ? previous.rows[key].cents : 0, diff = a - b;
+      return '<tr><th scope="row">' + esc(rows[key].name) + '</th><td>' + money(a) + '</td><td>' + money(b) + '</td><td>' + (diff > 0 ? '+' : '') + money(diff) + '</td></tr>';
+    }).join('') + '</tbody></table></div>' : '<p class="muted">这两个区间还没有已知金额的消费。</p>';
+    html += '</div><div class="card"><h2>最近 3 个完整月 · 类别变化</h2><p class="muted">按自然月展示，退款抵扣原消费类别。没有已知金额记录的月份显示 —。</p>';
+    var trends = Object.create(null), pending = 0;
+    reports.forEach(function (r, i) {
+      pending += r.pending_count;
+      Object.keys(r.rows).forEach(function (key) {
+        var row = r.rows[key];
+        if (!trends[key]) trends[key] = { name: row.name, cents: [null, null, null] };
+        trends[key].cents[i] = row.cents;
+      });
+    });
+    // 按 3 个月合计金额从高到低；合计相同时按名称
+    var trendTotal = function (key) { return trends[key].cents.reduce(function (sum, c) { return sum + (c || 0); }, 0); };
+    var trendKeys = Object.keys(trends).sort(function (a, b) { return trendTotal(b) - trendTotal(a) || trends[a].name.localeCompare(trends[b].name); });
+    if (pending) html += '<p class="incomplete-hint">这 3 个月有 ' + pending + ' 笔账目金额未补全，趋势不完整。</p>';
+    html += trendKeys.length ? '<div class="insights-scroll" role="region" aria-label="三个月类别变化，可横向滚动" tabindex="0"><table class="insights-table"><thead><tr><th scope="col">消费类别</th>' + reports.map(function (r) { return '<th scope="col">' + esc(r.month) + '</th>'; }).join('') + '</tr></thead><tbody>' + trendKeys.map(function (key) {
+      var row = trends[key];
+      return '<tr><th scope="row">' + esc(row.name) + '</th>' + row.cents.map(function (cents) { return '<td>' + money(cents) + '</td>'; }).join('') + '</tr>';
+    }).join('') + '</tbody></table></div>' : '<p class="muted">最近 3 个完整月还没有已知金额的消费，记账后会在这里积累变化。</p>';
+    $('page-report').innerHTML = html + '</div>';
+  }
+
+  // ---------- 预算（spec 7A；编辑只针对当前月） ----------
+  function loadBudget(month) {
+    state.budgetMonth = month;
+    show('budget');
+    return api('api_getBudgets', month).then(renderBudget).catch(fail);
+  }
+  /** 预算圆环：显示“剩余比例”；超出时整圈红色，中间写“超出 $X”。 */
+  function budgetRing(t, animate) {
+    var color = BUDGET_COLORS[t.state];
+    var len = t.state === 'over' ? 1000 : t.remaining_pct * 10;
+    // 接近预算时，剩余四舍五入成 0% 也要留一小段橙色，让状态看得见
+    if (t.state === 'near' && len < RING_MIN_LEN) len = RING_MIN_LEN;
+    var center = t.state === 'over'
+      ? centerHtml('超出', money(-t.remaining_cents), 'over')
+      : centerHtml('剩余', t.remaining_pct + '%', t.state === 'near' ? 'near' : '');
+    var label = '总预算 ' + money(t.budget_cents) + '，已用 ' + t.used_pct + '%，' + (t.state === 'over' ? '超出 ' + money(-t.remaining_cents) : '剩余 ' + money(t.remaining_cents));
+    var segs = len > 0 ? [{ color: color, start: 0, len: len, cls: animate ? 'anim' : '' }] : [];
+    return donutHtml(segs, label, center, 'budget-ring');
+  }
+  function renderBudget(v) {
+    state.budgetView = v;
+    var m = +v.month.slice(5, 7);
+    var animate = !prefersReducedMotion();
+    var html = '<div class="monthnav"><button data-act="bprev" aria-label="上个月">‹</button><strong>' + monthLabel(v.month) +
+      '</strong><button data-act="bnext" aria-label="下个月"' + (v.month >= v.current_month ? ' disabled' : '') + '>›</button></div>';
+    if (!v.ready) html += '<div class="warnbox" id="budget-setup">预算功能还没有启用：请先在脚本编辑器里重新运行一次 setupLedger（只需一次）。</div>';
+    if (!v.is_current_month) html += '<p class="muted" id="budget-readonly">' + (v.is_future_month ? '还没到这个月' : '过去的月份只能查看当时的预算') + '。修改预算请回到本月，从本月起生效。</p>';
+    if (v.pending_count > 0) html += '<p class="incomplete-hint" id="budget-pending">有 ' + v.pending_count + ' 笔未补全，预算统计不完整</p>';
+
+    var t = v.total;
+    if (t) {
+      var over = t.state === 'over';
+      html += '<div class="card bcard" id="budget-total" data-state="' + t.state + '"><div class="bhead"><h2>' + m + ' 月总预算</h2>' +
+        (v.editable ? '<button class="link" data-act="budget-edit" data-scope="total">修改</button>' : '') + '</div>' +
+        '<div class="bbody">' + budgetRing(t, animate) + '<div class="bstats">' +
+        '<div><div class="k">' + (over ? '超出预算' : '剩余预算') + '</div><div class="v' + (over ? ' neg' : '') + '" id="budget-remaining">' + money(Math.abs(t.remaining_cents)) + '</div></div>' +
+        '<div><div class="k">' + (v.is_current_month ? '本月预算' : m + ' 月预算') + '</div><div class="v">' + money(t.budget_cents) + '</div></div>' +
+        '<div><div class="k">' + (v.is_current_month ? '本月支出' : m + ' 月支出') + '</div><div class="v">' + money(t.used_cents) + '</div></div>' +
+        '</div></div>' +
+        (v.days_left !== null ? '<p class="muted center" id="budget-days">' + (v.days_left > 0 ? '本月还剩 ' + v.days_left + ' 天' : '今天是本月最后一天') + '</p>' : '') +
+        '</div>';
+    } else {
+      html += '<div class="card bempty" id="budget-empty"><div class="bempty-ic">' + donutHtml([], '还没有总预算', '<span class="rc-k">?</span>') + '</div>' +
+        (v.is_current_month
+          ? '<p><strong>还没有设置总预算</strong></p><p class="muted">设一个每月总预算，花了多少、还剩多少一眼就能看到；以后每个月自动沿用，不用重填。</p>' +
+            (v.editable ? '<button class="primary" data-act="budget-edit" data-scope="total">设置总预算</button>' : '')
+          : '<p class="muted">这个月没有设置总预算（' + m + ' 月支出 ' + money(v.total_used_cents) + '）</p>') + '</div>';
+    }
+
+    html += '<div class="card" id="budget-cats"><div class="bhead"><h2>类别预算</h2>' +
+      (v.editable && budgetCandidates(v).length ? '<button class="link" data-act="budget-add">+ 添加</button>' : '') + '</div>';
+    if (v.warning) html += '<div class="warnbox" id="budget-warning">' + esc(v.warning) + '（只是提醒，不影响保存）</div>';
+    html += v.categories.length ? v.categories.map(function (c) {
+      var tag = v.editable ? 'button' : 'div';
+      var color = BUDGET_COLORS[c.state];
+      var w = Math.min(c.used_pct, 100);
+      return '<' + tag + ' class="brow" data-state="' + c.state + '"' + (v.editable ? ' data-act="budget-edit" data-scope="' + esc(c.scope) + '"' : '') + '>' +
+        catIcon(c.name) + '<div class="bmain"><div class="btop"><span class="nm">' + esc(c.name) + '</span><span class="bnum">' + money(c.used_cents) + ' / ' + money(c.budget_cents) + '</span></div>' +
+        '<div class="thinbar"><span style="width:' + w + '%;background:' + color + '"></span></div>' +
+        (c.state === 'over' ? '<div class="bover">超出 ' + money(-c.remaining_cents) + '</div>' : '') + '</div></' + tag + '>';
+    }).join('') : '<p class="muted">' + (v.is_current_month ? '还没有类别预算。没设预算的类别只计入总预算。' : '这个月没有类别预算。') + '</p>';
+    html += '</div>';
+    $('page-budget').innerHTML = html + '<div class="minisheet" id="budget-sheet" hidden><div class="mini-card bsheet" id="budget-sheet-card"></div></div>';
+  }
+  /** “+ 添加”可选的类别：未删除的支出类别，去掉“未分类”和本月已有预算的。 */
+  function budgetCandidates(v) {
+    var used = {};
+    v.categories.forEach(function (c) { used[c.scope] = true; });
+    return categoriesOf('expense').filter(function (c) { return !c.archived && c.system_key !== 'uncategorized' && !used[c.id]; });
+  }
+  function openBudgetEditor(scope) {
+    var v = state.budgetView;
+    if (!v || !v.editable) return;
+    var item = scope === 'total' ? v.total : v.categories.filter(function (c) { return c.scope === scope; })[0];
+    var name = scope === 'total' ? '总预算' : (item ? item.name : (findCategory(scope) || {}).name);
+    state.bedit = { scope: scope, name: name, amount: item ? centsToText(item.budget_cents) : '', mode: 'amount', existing: !!item };
+    renderBudgetSheet();
+  }
+  function openBudgetPicker() {
+    state.bedit = { scope: null, name: '', amount: '', mode: 'pick', existing: false };
+    renderBudgetSheet();
+  }
+  function renderBudgetSheet() {
+    var b = state.bedit, box = $('budget-sheet'), card = $('budget-sheet-card');
+    if (!b || !box) return;
+    var html;
+    if (b.mode === 'pick') {
+      html = '<div class="bs-head"><strong>给哪个类别设预算？</strong><button class="link" data-act="bs-close">关闭</button></div>' +
+        '<div class="catgrid" id="bs-grid">' + budgetCandidates(state.budgetView).map(function (c) {
+          return '<button class="tile" data-act="bs-pick" data-id="' + esc(c.id) + '"><span class="ic">' + iconInner(c.name) + '</span><span class="nm">' + esc(c.name) + '</span></button>';
+        }).join('') + '</div>';
+    } else {
+      html = '<div class="sheet-head"><span class="sheet-cat">' + (b.scope === 'total' ? '' : catIcon(b.name)) + '<span class="nm">' + esc(b.name) + '</span></span>' +
+        '<div class="sheet-amt expense" id="bs-amt"></div></div>' +
+        '<div id="bs-hint" class="sheet-hint" role="alert" hidden></div>' +
+        '<p class="muted">每月预算，从本月起生效，以后每月自动沿用。' + (b.existing ? '清空金额后点“完成”= 从本月起取消这项预算。' : '') + '</p>' +
+        '<div class="keypad" id="bs-keypad">' + keypadHtml('bkey', '<button class="primary donekey" data-act="bs-save">完成</button>') + '</div>' +
+        '<div class="sheet-actions">' + (b.existing ? '<button class="link danger" data-act="bs-cancel-budget">取消这项预算</button>' : '') +
+        '<button class="link" data-act="bs-close">关闭</button></div>';
+    }
+    card.innerHTML = html;
+    box.hidden = false;
+    updateBudgetAmount();
+  }
+  function updateBudgetAmount() {
+    var el = $('bs-amt'), b = state.bedit;
+    if (!el || !b) return;
+    el.textContent = '$' + (b.amount || '0');
+    el.className = 'sheet-amt expense' + (b.amount ? '' : ' amt-empty');
+  }
+  function closeBudgetSheet() {
+    state.bedit = null;
+    var box = $('budget-sheet');
+    if (box) box.hidden = true;
+  }
+  function saveBudget(amount) {
+    var b = state.bedit;
+    if (!b || state.saving) return;
+    var text = amountForServer(amount);
+    if (!b.existing && !amountIsPositive(text)) { var h = $('bs-hint'); h.textContent = '先填金额'; h.hidden = false; return; }
+    if (b.existing && !amountIsPositive(text) && !confirm('从本月起取消“' + b.name + '”的预算？过去月份不受影响。')) return;
+    state.saving = true;
+    api('api_setBudget', b.scope, amountIsPositive(text) ? text : '').then(function (v) {
+      state.saving = false;
+      closeBudgetSheet();
+      renderBudget(v);
+      refreshBoot().catch(function () {});        // 预算变了，小助手的红点可能变化
+      toast((amountIsPositive(text) ? '已保存' : '已取消预算') + (v.warning ? '。' + v.warning : ''));
+    }, function (err) { state.saving = false; fail(err); });
+  }
+
+  // ---------- 我的：黑猫头部 + 打卡卡片 + 菜单（类别管理 / 收入来源 / 预算提醒比例 / 最近删除，各自是子页面） ----------
+  var ME_SUBS = { cats: '类别管理', sources: '收入来源', near: '预算提醒比例', deleted: '最近删除', applepay: 'Apple Pay 自动记账',
+    gmail: '外卖收据自动记账' };
+
+  /** Apple Pay 的红色提示（限流、超过 7 天未整理、出错）。没开启时什么都不显示（spec 5.3、PRD 6.4）。 */
+  function applePayAlertHtml() {
+    var ap = state.boot && state.boot.apple_pay;
+    if (!ap || !ap.configured || !ap.warnings || !ap.warnings.length) return '';
+    return '<div class="alertbox" id="ap-alert" role="alert">' + ap.warnings.map(function (w) { return '<p>' + esc(w) + '</p>'; }).join('') +
+      '<button class="link" data-act="me-goto" data-sub="applepay">查看 Apple Pay 状态 ›</button></div>';
+  }
+  function applePayMenuValue() {
+    var ap = state.boot && state.boot.apple_pay;
+    if (!ap || !ap.configured) return '未开启';
+    return ap.warnings && ap.warnings.length ? '需要注意' : '正常';
+  }
+  function applePayStatusHtml() {
+    var ap = state.boot && state.boot.apple_pay;
+    if (!ap || !ap.configured) {
+      return '<div class="card" id="ap-status"><h2>还没有开启</h2><p class="muted">开启后，在实体店用 iPhone 刷 Apple Pay，' +
+        '快捷指令会把金额和商家自动记成一笔“Apple Pay”支出（类别“未分类”，之后可以改）。开启需要你本人按设置说明操作；没开启也不影响手动记账。</p></div>';
+    }
+    function line(k, v) { return '<div class="list-item"><span>' + k + '</span><span class="muted">' + esc(v || '还没有') + '</span></div>'; }
+    function when(local) { return local ? dayLabel(local.slice(0, 10)) + ' ' + local.slice(11, 16) : ''; }
+    var html = '<div class="card" id="ap-status"><h2>运行状态</h2>' +
+      line('最近一次整理', when(ap.last_run_local)) + line('最近一次成功', when(ap.last_success_local)) + line('最近一次入账', when(ap.last_entry_local));
+    if (ap.error) html += '<div class="alertbox"><p>出错：' + esc(ap.error.text) + '（' + esc(when(ap.error.local)) + '，代码 ' + esc(ap.error.code) + '）</p></div>';
+    if (ap.stale_count) html += '<div class="alertbox"><p>收件箱有 ' + ap.stale_count + ' 笔超过 7 天还没整理成账目。收件箱的原始记录 30 天后会被清除，请尽快检查定时任务（installTriggers）。</p></div>';
+    if (!ap.ready) html += '<p class="muted">状态和限流提醒还没有启用：请在脚本编辑器里重新运行一次 setupLedger（只需一次）。</p>';
+    html += '<p class="muted">打开记账网页时、以及每 5 分钟，会自动把新的 Apple Pay 付款整理成账目。</p></div>';
+    html += '<div class="card" id="ap-limits"><h2>超出上限被拒收</h2><p class="muted">为防止口令泄露后被灌入假账，收件口每小时最多收 10 笔、每天最多 30 笔。' +
+      '被拒收的付款不会保存，请对照付款记录手动补记。</p>' +
+      (ap.markers && ap.markers.length ? ap.markers.map(function (m) {
+        return '<div class="list-item"><span>' + esc(m.local) + ' 起</span><span class="danger">拒收 ' + m.count + ' 笔</span></div>';
+      }).join('') : '<p class="muted">最近 7 天没有被拒收的付款</p>') + '</div>';
+    return html;
+  }
+  /** 外卖收据（Gmail）的红色提示：只在开启后、心跳超时或最近一轮运行出错时显示；没开启时什么都不显示（spec 6.7）。 */
+  function gmailAlertHtml() {
+    var gm = state.boot && state.boot.gmail;
+    if (!gm || !gm.enabled || !gm.warnings || !gm.warnings.length) return '';
+    return '<div class="alertbox" id="gm-alert" role="alert">' + gm.warnings.map(function (w) { return '<p>' + esc(w) + '</p>'; }).join('') +
+      '<button class="link" data-act="me-goto" data-sub="gmail">查看外卖收据状态 ›</button></div>';
+  }
+  function gmailMenuValue() {
+    var gm = state.boot && state.boot.gmail;
+    if (!gm) return '';
+    if (gm.enabled && gm.warnings && gm.warnings.length) return '需要注意';
+    if (gm.pending_count) return gm.pending_count + ' 封待查看';
+    return gm.enabled ? '正常' : '未开启';
+  }
+  function gmailStatusHtml() {
+    var gm = (state.boot && state.boot.gmail) || { enabled: false, pending: [] };
+    function when(local) { return local ? dayLabel(local.slice(0, 10)) + ' ' + local.slice(11, 16) : ''; }
+    function line(k, v) { return '<div class="list-item"><span>' + k + '</span><span class="muted">' + esc(v || '还没有') + '</span></div>'; }
+    var html = '';
+    if (!gm.enabled) {
+      html += '<div class="card" id="gm-status"><h2>还没有开启</h2><p class="muted">开启后，DoorDash 和 Uber Eats 收据会记为“餐饮”，Uber 打车收据会记为“交通”。名单以外像收据的邮件不会自动入账，会放进待查看。' +
+        '轮询每 5 分钟检查一次；已经通过核对、符合自动记账规则的名单邮件通常会在 Gmail 收到后约 15 分钟内记账。待查看邮件需要你自己处理。开启分两步，需要你本人在脚本编辑器里操作：' +
+        '先运行试运行 dryRunReceipts 核对识别结果，核对没问题后再运行 enableReceiptPolling。没开启也不影响手动记账。</p></div>';
+    } else {
+      html += '<div class="card" id="gm-status"><h2>运行状态</h2>' + line('最近一次读取', when(gm.last_run_local)) + line('最近一次成功', when(gm.last_success_local));
+      if (gm.unavailable) html += '<p class="muted">状态暂时读不出来，稍后再看。</p>';
+      gm.warnings.forEach(function (w) { html += '<div class="alertbox"><p>' + esc(w) + '</p></div>'; });
+      if (gm.error) html += '<p class="muted">错误代码 ' + esc(gm.error.code) + '（' + esc(when(gm.error.local)) + '）</p>';
+      html += '<p class="muted">每 5 分钟读取一次三个外卖平台的新邮件。只保存邮件编号、日期、金额和分类，不保存邮件内容。</p></div>';
+      html += '<div class="card" id="gm-platforms"><h2>各平台</h2>' + (gm.platforms || []).map(function (p) {
+        var sub = [];
+        sub.push(p.last_entry_local ? '最后入账 ' + when(p.last_entry_local) + (p.last_latency_min !== null ? '（邮件到达后约 ' + p.last_latency_min + ' 分钟）' : '') : '还没有自动入账');
+        if (p.uncertain_count) sub.push('未识别邮件 ' + p.uncertain_count + ' 封');
+        if (p.issue) sub.push('最近问题：' + p.issue.text + '（' + when(p.issue.local) + '）');
+        return '<div class="list-item gm-platform" data-platform="' + esc(p.id) + '"><span>' + esc(p.name) + '<br><span class="muted">' +
+          sub.map(esc).join('<br>') + '</span></span><span class="muted">' + esc(p.support_label) + '</span></div>';
+      }).join('') + '</div>';
+    }
+    var pend = gm.pending || [];
+    if (gm.enabled || pend.length) {
+      html += '<div class="card" id="gm-pending"><h2>待查看邮件</h2><p class="muted">名单外像收据的邮件不会自动记账。你可以在 Gmail 中查看后，选择“记这一笔”、选类别加入名单并“以后自动记”、静音这个商家，或只把这封标为“已查看”。静音商家后，它的待查看邮件会隐藏。</p>' +
+        (pend.length ? pend.map(function (m) {
+          var cats = ((state.boot && state.boot.categories) || []).filter(function (c) { return c.type === 'expense' && !c.archived; });
+          var catSelect = '<select id="mail-category-' + esc(m.id) + '" aria-label="选择自动记账类别">' + cats.map(function (c) {
+            return '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>';
+          }).join('') + '</select>';
+          return '<div class="list-item gm-mail" data-id="' + esc(m.id) + '"><span>' + esc(m.platforms || m.sender_domain || '邮件') + '<br><span class="muted">' + esc(when(m.date_local)) + ' 收到 · ' + esc(m.amount_cents === null || m.amount_cents === undefined ? '未读到金额' : '$' + (m.amount_cents / 100).toFixed(2)) + '</span></span>' +
+            '<div class="gm-actions">' + (m.link ? '<a class="link" href="' + esc(m.link) + '" target="_blank" rel="noopener noreferrer">在 Gmail 中打开</a> ' : '') +
+            '<button class="link" data-act="mail-record" data-id="' + esc(m.id) + '">记这一笔</button>' +
+            (m.sender_domain ? '<div>' + catSelect + '<button class="link" data-act="mail-auto" data-id="' + esc(m.id) + '"' + (typeof m.amount_cents !== 'number' ? ' disabled' : '') + '>以后自动记</button> ' +
+              '<button class="link" data-act="mail-mute" data-id="' + esc(m.id) + '">不再提醒这个商家</button></div>' : '') +
+            '<button class="link" data-act="mail-reviewed" data-id="' + esc(m.id) + '">已查看</button></div></div>';
+        }).join('') : '<p class="muted">没有待查看的邮件</p>') + '</div>';
+    }
+    return html;
+  }
+  function loadSettings() {
+    show('settings');
+    return Promise.all([refreshBoot(), api('api_listDeleted')]).then(function (res) { state.deletedCache = res[1]; renderSettings(res[1]); }).catch(fail);
+  }
+  function renderSettings(deleted) {
+    var sub = state.meSub && ME_SUBS[state.meSub] ? state.meSub : null;
+    $('page-settings').innerHTML = sub ? meSubHtml(sub, deleted) : meMainHtml(deleted);
+    $('page-settings').classList.toggle('me-main', !sub);
+  }
+  function meMainHtml(deleted) {
+    var c = state.boot.checkin || { ready: false, cumulative: 0, streak: 0, week: [], checked_today: false };
+    var html = '<div class="me-hero" id="me-hero">' + catAvatar('normal', 'big') + '<div class="me-hero-txt"><h2>我的小账本</h2>' +
+      '<p id="me-days">已陪你记账 ' + c.cumulative + ' 天</p></div></div>';
+    html += '<div class="card ck-card" id="checkin-card"><div class="ck-stats">' +
+      '<div><div class="k">连续打卡</div><div class="v"><strong id="ck-streak">' + c.streak + '</strong> 天</div></div>' +
+      '<div><div class="k">累计打卡</div><div class="v"><strong id="ck-total">' + c.cumulative + '</strong> 天</div></div></div>';
+    if (c.ready) {
+      html += '<div class="ck-week" id="ck-week">' + c.week.map(function (d) {
+        return '<div class="ckd' + (d.checked ? ' on' : '') + (d.is_today ? ' today' : '') + (d.future ? ' future' : '') + '" data-date="' + esc(d.date) + '">' +
+          '<span class="ckm">' + (d.checked ? PAW_STAMP : '') + '</span><span class="ckl">' + esc(d.label) + '</span></div>';
+      }).join('') + '</div>';
+      html += '<p class="ck-next" id="ck-next">' + (c.cumulative === 0 ? '记下第一笔账，就完成第一次打卡啦'
+        : '再打卡 ' + c.days_to_next + ' 天，就到 ' + c.next_milestone + ' 天里程碑啦') + '</p>';
+      html += c.checked_today
+        ? '<p class="ck-today ok" id="ck-today">今天已打卡 ✓</p>'
+        : '<p class="ck-today" id="ck-today">今天还没记账哦 <button class="link" data-nav="form">去记一笔</button></p>';
+    } else {
+      html += '<p class="muted" id="ck-setup">打卡功能还没有启用：请在脚本编辑器里重新运行一次 setupLedger（只需一次）。</p>';
+    }
+    html += '</div>';
+    function item(sub, icon, value) {
+      return '<button class="menu-item" data-act="me-sub" data-sub="' + sub + '"><span class="mi-ic">' + icon + '</span><span class="mi-name">' + ME_SUBS[sub] +
+        '</span>' + (value ? '<span class="mi-val" id="mi-' + sub + '">' + value + '</span>' : '') + CHEVRON + '</button>';
+    }
+    var sv = function (inner) { return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>'; };
+    html += '<div class="card menu" id="me-menu">' +
+      item('cats', sv('<rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>')) +
+      item('sources', ICONS['工资'] ? sv(ICONS['工资']) : '') +
+      item('near', sv('<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/>'), state.boot.budget_near_pct + '%') +
+      item('deleted', sv('<path d="M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13"/>'), deleted.length ? deleted.length + ' 笔' : '') +
+      item('applepay', sv('<rect x="3" y="5.5" width="18" height="13" rx="3"/><path d="M3 10h18M7 15h3"/>'), applePayMenuValue()) +
+      item('gmail', sv('<rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3.5 7l8.5 6 8.5-6"/>'), gmailMenuValue()) +
+      '<div class="menu-item" id="mi-sound-row"><span class="mi-ic">' + sv('<path d="M4 10v4h3.5L12 18V6L7.5 10H4z"/><path d="M15.5 9.5a3.5 3.5 0 0 1 0 5"/><path d="M18 7a7 7 0 0 1 0 10"/>') +
+      '</span><span class="mi-name">音效</span><button class="switch' + (soundOn() ? ' on' : '') + '" id="sound-switch" role="switch" aria-checked="' + (soundOn() ? 'true' : 'false') +
+      '" aria-label="音效" data-act="toggle-sound"><i></i></button></div>' +
+      '<div class="menu-item" id="mi-lang-row"><span class="mi-ic">' + sv('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.5 5.2 3.5 8.5s-1.1 6.1-3.5 8.5c-2.4-2.4-3.5-5.2-3.5-8.5s1.1-6.1 3.5-8.5z"/>') +
+      '</span><span class="mi-name">语言</span><div class="seg lang-seg" id="lang-seg" role="group" aria-label="语言">' +
+      '<button data-act="set-lang" data-lang="zh" class="' + (window.I18N.lang() === 'zh' ? 'on' : '') + '" aria-pressed="' + (window.I18N.lang() === 'zh') + '" lang="zh-CN" translate="no">中文</button>' +
+      '<button data-act="set-lang" data-lang="en" class="' + (window.I18N.lang() === 'en' ? 'on' : '') + '" aria-pressed="' + (window.I18N.lang() === 'en') + '" lang="en" translate="no">English</button></div></div>' +
+      '</div>';
+    return html;
+  }
+  function meSubHtml(sub, deleted) {
+    var html = '<div class="subhead"><button class="back" data-act="me-back" aria-label="返回">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>' +
+      '</button><h2 id="me-sub-title">' + ME_SUBS[sub] + '</h2></div>';
+    if (sub === 'cats') {
+      ['expense', 'income'].forEach(function (type) {
+        html += '<div class="card"><h2>' + (type === 'expense' ? '支出类别' : '收入类别') + '</h2>' +
+          categoriesOf(type).map(function (c) {
+            return '<div class="list-item"><span>' + esc(c.name) + '</span>' + (c.system_key === 'uncategorized'
+              ? '<span class="muted">系统类别</span>'
+              : '<button class="link danger" data-act="del-cat" data-id="' + esc(c.id) + '">删除</button>') + '</div>';
+          }).join('') +
+          '<div class="row"><input id="new-cat-' + type + '" maxlength="30" placeholder="新类别名称"><button class="secondary" data-act="add-cat" data-type="' + type + '">添加</button></div></div>';
+      });
+    } else if (sub === 'sources') {
+      html += '<div class="card"><h2>收入来源</h2>' + state.boot.sources.filter(function (s) { return !s.archived; }).map(function (s) {
+        return '<div class="list-item"><span>' + esc(s.name) + '</span><button class="link danger" data-act="del-src" data-id="' + esc(s.id) + '">停用</button></div>';
+      }).join('') + '<div class="row"><input id="new-src" maxlength="60" placeholder="例如：兼职 A"><button class="secondary" data-act="add-src">添加</button></div></div>';
+    } else if (sub === 'near') {
+      var near = state.boot.budget_near_pct, opts = '';
+      for (var p = 50; p <= 100; p++) opts += '<option value="' + p + '"' + (p === near ? ' selected' : '') + '>' + p + '%</option>';
+      html += '<div class="card" id="near-card"><h2>预算提醒比例</h2><p class="muted">预算已用达到这个比例时，预算页的圆环和进度条变成橙色，小猫助手会提醒你；超过 100% 变成红色。</p>' +
+        '<label class="field">接近预算的比例<select id="f-near-pct">' + opts + '</select></label></div>';
+    } else if (sub === 'deleted') {
+      html += '<div class="card"><h2>最近删除</h2><p class="muted">删除的账目保留 30 天，之后自动清除；删除期间不计入任何统计。</p>' +
+        (deleted.length ? deleted.map(function (e) {
+          return '<div class="list-item"><span>' + esc(e.date_ny + ' ' + (e.merchant || e.category_name)) + ' ' + money(e.amount_cents) +
+            '<br><span class="muted">' + esc(e.purge_on) + ' 自动清除</span></span><button class="link" data-act="restore" data-id="' + esc(e.id) + '">恢复</button></div>';
+        }).join('') : '<p class="muted">没有已删除的账目</p>') + '</div>';
+    } else if (sub === 'applepay') {
+      html += applePayStatusHtml();
+    } else if (sub === 'gmail') {
+      html += gmailStatusHtml();
+    }
+    return html;
+  }
+
+  // ---------- 小猫助手（spec 7A.3–7A.5）：左上角入口 + 全屏对话窗口 ----------
+  function updateLauncher() {
+    var dot = $('assistant-dot');
+    var n = state.boot && state.boot.assistant ? state.boot.assistant.unread_count : 0;
+    if (dot) dot.hidden = !(n > 0);
+    var btn = $('assistant-btn');
+    if (btn) btn.setAttribute('aria-label', n > 0 ? '小猫助手（' + n + ' 条新消息）' : '小猫助手');
+  }
+  function itemRows(items) {
+    if (!items || !items.length) return '';
+    return '<div class="aitems">' + items.map(function (it) {
+      return '<div class="aitem"><span>' + esc(it.label) + '</span><span class="aamt">' + money(it.amount_cents) + '</span></div>';
+    }).join('') + '</div>';
+  }
+  function botBubble(m) {
+    var actionLabel = m.action === 'goto:savings' ? '去调整目标'
+      : (m.action === 'goto:pending' || m.action === 'goto:mail_pending') ? '去处理' : '';
+    var act = actionLabel ? '<button class="abtn" data-act="assistant-goto" data-action="' + esc(m.action) + '">' + actionLabel + '</button>' : '';
+    var time = m.created_local ? '<div class="atime">' + esc(dayLabel(m.created_local.slice(0, 10)) + ' ' + m.created_local.slice(11, 16)) + '</div>' : '';
+    return '<div class="amsg bot" data-skill="' + esc(m.skill_id || '') + '" data-mood="' + (m.mood === 'happy' ? 'happy' : 'normal') + '">' +
+      catAvatar(m.mood) + '<div class="acol"><div class="abubble"><p>' + esc(m.text) + '</p>' + itemRows(m.items) + act + '</div>' + time + '</div></div>';
+  }
+  function scrollChatToEnd() {
+    var list = $('aov-list');
+    if (list) list.scrollTop = list.scrollHeight;
+  }
+  function renderAssistant(a) {
+    var html = '';
+    if (!a.ready) {
+      html += botBubble({ skill_id: 'intro', mood: 'normal', text: '小猫的提醒功能还没有启用：请在脚本编辑器里重新运行一次 setupLedger。下面的问题现在就能问我哦。' });
+    } else if (!a.messages.length) {
+      html += botBubble({ skill_id: 'intro', mood: 'normal', text: '喵～我是你的记账小猫。有预算提醒、夸奖和打卡好消息时会在这里告诉你，也可以点下面的问题问我。' });
+    }
+    html += a.messages.map(botBubble).join('');
+    html += '<button class="aq" data-act="table-start">生成交易表格</button>';
+    $('aov-list').innerHTML = html;
+    $('aov-qs').innerHTML = a.questions.map(function (q) {
+      return '<button class="aq" data-act="assistant-ask" data-id="' + esc(q.id) + '">' + esc(q.label) + '</button>';
+    }).join('');
+    scrollChatToEnd();
+  }
+  function openAssistant() {
+    var ov = $('assistant-overlay');
+    state.assistantOpen = true;
+    ov.hidden = false;
+    document.body.classList.add('aov-open');
+    void ov.offsetWidth;
+    ov.classList.add('open');
+    $('aov-list').innerHTML = '<p class="muted center">加载中…</p>';
+    $('aov-qs').innerHTML = '';
+    return api('api_getAssistant').then(function (a) {
+      if (!state.assistantOpen) return;
+      renderAssistant(a);
+      if (a.unread_count > 0) {
+        return api('api_markAssistantRead').then(function () {
+          if (state.boot && state.boot.assistant) state.boot.assistant.unread_count = 0;
+          updateLauncher();
+        });
+      }
+    }).catch(fail);
+  }
+  function closeAssistant() {
+    var ov = $('assistant-overlay');
+    state.assistantOpen = false;
+    ov.classList.remove('open');
+    ov.hidden = true;
+    document.body.classList.remove('aov-open');
+  }
+  /** 点问题按钮：先插入“你问的问题”，再插入回答（回答即时计算，不保存、不产生红点）。 */
+  function askAssistant(id, label) {
+    var list = $('aov-list');
+    list.insertAdjacentHTML('beforeend', '<div class="amsg me"><div class="abubble">' + esc(label) + '</div></div>');
+    scrollChatToEnd();
+    return api('api_askAssistant', id).then(function (ans) {
+      if (!state.assistantOpen) return;
+      list.insertAdjacentHTML('beforeend', botBubble(ans).replace('class="amsg bot"', 'class="amsg bot answer"'));
+      scrollChatToEnd();
+    }).catch(fail);
+  }
+
+  function startTransactionTable() {
+    var today = state.boot.today_ny;
+    $('aov-list').innerHTML = '<div class="abubble">选择报表的起止日期。系统会直接生成独立的收支明细文件，期初余额承接开始日期之前的已知账目余额（账本从 $0.00 开始累计）；如果你设置了预算，也会附上涉及月份的整月预算对比。</div>' +
+      '<label class="table-date-label" for="table-start-date">开始日期</label><input id="table-start-date" type="date" value="' + esc(today.slice(0, 7) + '-01') + '">' +
+      '<label class="table-date-label" for="table-end-date">结束日期</label><input id="table-end-date" type="date" value="' + esc(today) + '">' +
+      '<button class="primary" data-act="table-generate">生成报表</button>';
+  }
+  function generateTransactionTable() {
+    var start = $('table-start-date').value, end = $('table-end-date').value;
+    if (!start || !end || start > end) { toast('请检查报表的开始和结束日期'); return; }
+    var button = document.querySelector('[data-act="table-generate"]');
+    button.disabled = true;
+    button.textContent = '正在生成…';
+    api('api_generateTransactionReport', start, end, window.I18N.lang()).then(function (result) {
+      var warning = '';
+      if (result.opening_pending_count) warning += '开始日期之前有 ' + result.opening_pending_count + ' 笔金额待补全，期初余额不完整。';
+      if (result.pending_count) warning += '所选范围有 ' + result.pending_count + ' 笔金额待补全，相关余额已标注为不完整。';
+      $('aov-list').innerHTML = '<div class="abubble">报表已生成，共 ' + result.transaction_count + ' 笔交易。账本没有被修改。</div>' +
+        (warning ? '<p class="table-report-warning">' + esc(warning) + '</p>' : '') +
+        '<p class="table-report-range">' + esc(result.start_date) + ' 至 ' + esc(result.end_date) + '</p>' +
+        '<a class="primary table-report-link" target="_blank" rel="noopener" href="' + esc(result.spreadsheet_url) + '">在 Google Sheets 打开</a>' +
+        '<a class="secondary table-report-link" target="_blank" rel="noopener" href="' + esc(result.excel_url) + '">下载 Excel 文件</a>';
+    }).catch(function (err) {
+      button.disabled = false;
+      button.textContent = '生成报表';
+      fail(err);
+    });
+  }
+
+  /** 我的 → 预算提醒比例：选好就保存；失败时恢复原来的选项。 */
+  function saveNearPct(sel) {
+    var before = state.boot.budget_near_pct;
+    api('api_setBudgetNearPct', Number(sel.value)).then(function (r) {
+      state.boot.budget_near_pct = r.budget_near_pct;
+      refreshBoot().catch(function () {});        // 比例变了，小助手的红点可能变化
+      toast('提醒比例已改为 ' + r.budget_near_pct + '%');
+    }, function (err) { sel.value = String(before); fail(err); });
+  }
+
+  function refreshBoot() {
+    return api('api_bootstrap').then(function (b) { state.boot = b; window.I18N.addCategories(b.categories); updateLauncher(); return b; });
+  }
+
+  // ---------- 点击事件（统一处理） ----------
+  document.addEventListener('click', function (ev) {
+    if (state.saving && !ev.target.closest('[data-act="save"]')) return;   // 保存动画期间忽略其他点击
+    var ae = document.activeElement;
+    if (isTextField(ae) && ae.closest('#entry-sheet') && !ev.target.closest('input, textarea, select, label')) ae.blur();   // 点到别处 = 收起手机键盘
+    var nav = ev.target.closest('[data-nav]');
+    if (nav) { navTap(nav); return; }
+    var el = ev.target.closest('[data-act]');
+    if (!el) return;
+    var act = el.getAttribute('data-act'), id = el.getAttribute('data-id');
+    if (act === 'prev' || act === 'next') { state.month = addMonths(state.month, act === 'prev' ? -1 : 1); state.filter = 'all'; loadEntries(); }
+    else if (act === 'toggle-filter') { state.filter = state.filter === 'attention' ? 'all' : 'attention'; loadEntries(); }
+    else if (act === 'new') { go('form'); }
+    else if (act === 'edit') { openForm(id); }
+    else if (act === 'tab') { state.gridType = el.getAttribute('data-type'); renderGrid(); }
+    else if (act === 'pick') { selectCategory(id); }
+    else if (act === 'back-grid') { closeSheet(); }
+    else if (act === 'sheet-dismiss') { dismissSheet(); }
+    else if (act === 'assistant-open') { openAssistant(); }
+    else if (act === 'assistant-close') { closeAssistant(); }
+    else if (act === 'assistant-ask') { askAssistant(id, el.textContent); }
+    else if (act === 'table-start') { startTransactionTable(); }
+    else if (act === 'table-generate') { generateTransactionTable(); }
+    else if (act === 'assistant-goto') {
+      closeAssistant();
+      if (el.getAttribute('data-action') === 'goto:savings') {
+        state.reportTab = 'savings';
+        loadReportPage();
+        return;
+      }
+      if (el.getAttribute('data-action') === 'goto:mail_pending') {
+        state.meSub = 'gmail';
+        loadSettings();
+        return;
+      }
+      // 先问一次有待处理账目的月份，打开最早的；都处理完了就打开本月（显示“没有需要处理的记录”）
+      state.filter = 'attention';
+      api('api_listMonth', state.boot.current_month, 'attention').then(function (d) {
+        var ms = d.attention_months || [];
+        state.month = ms.length ? ms[0].month : state.boot.current_month;
+        loadEntries();
+      }).catch(fail);
+    }
+    else if (act === 'next-attention') { state.month = el.getAttribute('data-month'); state.filter = 'attention'; loadEntries(); }
+    else if (act === 'me-sub') { state.meSub = el.getAttribute('data-sub'); loadSettings(); }
+    else if (act === 'toggle-sound') {
+      var on = !soundOn(); setSoundOn(on);
+      el.classList.toggle('on', on); el.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+    else if (act === 'set-lang') { window.I18N.setLang(el.getAttribute('data-lang')); renderSettings(state.deletedCache || []); }
+    else if (act === 'me-back') { state.meSub = null; loadSettings(); }
+    else if (act === 'me-goto') { state.meSub = el.getAttribute('data-sub'); loadSettings(); }
+    else if (act === 'mail-reviewed') {
+      api('api_markMailReviewed', id).then(function () { toast('已查看'); return loadSettings(); }).catch(fail);
+    }
+    else if (act === 'mail-mute') {
+      api('api_muteMailSender', id).then(function () { toast('已隐藏这个商家'); return refreshBoot().then(loadSettings); }).catch(fail);
+    }
+    else if (act === 'mail-auto') {
+      var cat = document.getElementById('mail-category-' + id);
+      api('api_addMailSenderAndRecord', id, cat ? cat.value : '').then(function () {
+        toast('已加入自动名单并记下这笔'); return refreshBoot().then(loadSettings);
+      }).catch(fail);
+    }
+    else if (act === 'mail-record') {
+      var pending = ((state.boot && state.boot.gmail && state.boot.gmail.pending) || []).filter(function (m) { return m.id === id; })[0];
+      if (!pending) { toast('找不到这封邮件，请刷新后再试'); return; }
+      openForm(null).then(function () {
+        var d = state.draft;
+        d.pending_message_id = id;
+        d.amount = typeof pending.amount_cents === 'number' ? centsToText(pending.amount_cents) : '';
+        d.merchant = pending.sender_domain || pending.platforms || '';
+        d.local_datetime = pending.date_local || state.boot.now_local;
+        var cat = (state.boot.categories || []).filter(function (c) { return c.type === 'expense' && !c.archived; })[0];
+        d.category_id = cat ? cat.id : '';
+        d.note = '来自待查看邮件';
+        renderFormPage(); openSheet();
+      }).catch(fail);
+    }
+    else if (act === 'keep-dups') {
+      api('api_keepDuplicates', id).then(function () { toast('已保留，两笔都计入'); return refreshBoot().then(loadEntries); }).catch(fail);
+    }
+    else if (act === 'form-cancel') { show(state.lastPage || 'entries'); }
+    else if (act === 'add-tile') { $('addcat-box').hidden = false; $('f-newcat').value = ''; $('f-newcat').focus(); }
+    else if (act === 'addcat-cancel') { $('addcat-box').hidden = true; }
+    else if (act === 'addcat-ok') { submitNewCategory(); }
+    else if (act === 'chip') {
+      var d = state.draft, chip = el.getAttribute('data-chip');
+      if (chip === 'refund' && d.isManual && !d.is_refund) { d.is_refund = true; d.expanded = 'refund'; }
+      else d.expanded = d.expanded === chip ? null : chip;
+      renderChips();
+    }
+    else if (act === 'refund-off') { var dr = state.draft; dr.is_refund = false; dr.refund_of = ''; dr.expanded = null; renderChips(); }
+    else if (act === 'key') {
+      var dk = state.draft;
+      dk.amount = keypadPress(dk.amount, el.getAttribute('data-key'));
+      updateAmount();
+      showHint('');
+    }
+    else if (act === 'save') { saveForm(el); }
+    else if (act === 'delete') {
+      if (!confirm('确定删除这笔账目？30 天内可在“我的 → 最近删除”中恢复。')) return;
+      api('api_deleteEntry', id).then(function () { toast('已删除'); return refreshBoot().then(loadEntries); }).catch(fail);
+    }
+    else if (act === 'restore') {
+      api('api_restoreEntry', id).then(function (e) { toast('已恢复'); state.month = e.month_ny; return refreshBoot().then(loadEntries); }).catch(fail);
+    }
+    else if (act === 'rprev' || act === 'rnext') { loadReport(addMonths(state.reportMonth, act === 'rprev' ? -1 : 1)); }
+    else if (act === 'rtab') { state.reportTab = el.getAttribute('data-tab'); loadReportPage(); }
+    else if (act === 'savings-refresh') { loadSavings(); }
+    else if (act === 'habits-refresh') { loadSpendingHabits(); }
+    else if (act === 'savings-goal' || act === 'savings-deposit') { openSavingsEditor(act === 'savings-goal' ? 'goal' : 'deposit', id); }
+    else if (act === 'savings-cancel') {
+      if (!state.savingsBusy) { state.savingsEditor = null; renderSavings(state.savingsView); }
+    }
+    else if (act === 'btab') { state.billsTab = el.getAttribute('data-tab'); loadBills(); }
+    else if (act === 'yprev' || act === 'ynext') { state.billsYear = String(+state.billsYear + (act === 'yprev' ? -1 : 1)); loadBills(); }
+    else if (act === 'bill-month') { loadReport(el.getAttribute('data-month')); }              // 月账单的某个月 → 那个月的月报
+    else if (act === 'bill-year') { state.billsTab = 'month'; state.billsYear = el.getAttribute('data-year'); loadBills(); }   // 年账单的某一年 → 那一年的月账单
+    else if (act === 'bprev' || act === 'bnext') { loadBudget(addMonths(state.budgetMonth, act === 'bprev' ? -1 : 1)); }
+    else if (act === 'budget-edit') { openBudgetEditor(el.getAttribute('data-scope')); }
+    else if (act === 'budget-add') { openBudgetPicker(); }
+    else if (act === 'bs-pick') { var pc = findCategory(id); state.bedit = { scope: id, name: pc ? pc.name : '', amount: '', mode: 'amount', existing: false }; renderBudgetSheet(); }
+    else if (act === 'bs-close') { closeBudgetSheet(); }
+    else if (act === 'bkey') {
+      if (!state.bedit) return;
+      state.bedit.amount = keypadPress(state.bedit.amount, el.getAttribute('data-key'));
+      updateBudgetAmount();
+      var bh = $('bs-hint'); if (bh) bh.hidden = true;
+    }
+    else if (act === 'bs-save') { saveBudget(state.bedit && state.bedit.amount); }
+    else if (act === 'bs-cancel-budget') { saveBudget(''); }
+    else if (act === 'goto-pending') { state.month = el.getAttribute('data-month'); state.filter = 'attention'; loadEntries(); }
+    else if (act === 'toggle-sources') {
+      var box = el.nextElementSibling; box.hidden = !box.hidden; el.textContent = box.hidden ? '展开来源' : '收起来源';
+    }
+    else if (act === 'add-cat') {
+      var type = el.getAttribute('data-type');
+      api('api_addCategory', type, $('new-cat-' + type).value).then(function () { toast('已添加'); loadSettings(); }).catch(fail);
+    }
+    else if (act === 'del-cat') {
+      if (!confirm('删除这个类别？已有账目和月报不受影响。')) return;
+      api('api_archiveCategory', id).then(loadSettings).catch(fail);
+    }
+    else if (act === 'add-src') { api('api_addSource', $('new-src').value).then(function () { toast('已添加'); loadSettings(); }).catch(fail); }
+    else if (act === 'del-src') { api('api_archiveSource', id).then(loadSettings).catch(fail); }
+  });
+  /** 面板里的输入框 / 下拉框：把内容记进草稿（输入框用 input 事件，下拉框用 change 事件，两个都接）。 */
+  function onField(ev) {
+    var t = ev.target, d = state.draft;
+    if (t.id === 'f-near-pct') { if (ev.type === 'change') saveNearPct(t); return; }
+    if (!d || !t.id) return;
+    if (t.id === 'f-datetime') d.local_datetime = t.value;
+    else if (t.id === 'f-merchant') d.merchant = t.value;
+    else if (t.id === 'f-note') d.note = t.value;
+    else if (t.id === 'f-new-source') d.new_source = t.value;
+    else if (t.id === 'f-source') {
+      var wasNew = d.source_sel === '__new__';
+      d.source_sel = t.value;
+      if (wasNew !== (t.value === '__new__')) renderChipPanel();      // 显示/隐藏“新来源名称”
+    } else if (t.id === 'f-refund-of') {
+      d.refund_of = t.value;
+      var opt = t.selectedOptions[0], cat = opt && opt.getAttribute('data-cat');
+      if (cat) { d.category_id = cat; renderGrid(); updateSheetHead(); }     // 退款默认使用原交易的类别（PRD 第 4 节）
+    } else return;
+    updateChipLabels();
+  }
+  document.addEventListener('input', onField);
+  document.addEventListener('change', onField);
+  // 文字框获得/失去焦点：自定义键盘隐藏/出现（blur/focus 不冒泡，所以用捕获）
+  document.addEventListener('focus', function (ev) { if (isTextField(ev.target)) syncTyping(); }, true);
+  document.addEventListener('blur', function (ev) { if (isTextField(ev.target)) { var sh = $('entry-sheet'); if (sh) sh.classList.remove('typing'); $('keypad') && $('keypad').setAttribute('aria-hidden', 'false'); } }, true);
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Enter' || !isTextField(ev.target)) return;
+    if (ev.target.closest('.savings-form')) return;
+    ev.preventDefault();
+    if (ev.target.id === 'f-newcat') submitNewCategory();
+    else ev.target.blur();              // 手机键盘的“完成/换行”键 = 收起键盘，自定义键盘回来
+  });
+  document.addEventListener('touchstart', function () {}, { passive: true });   // 让 iOS 的按键按下效果（:active）生效
+
+  // ---------- 启动 ----------
+  refreshBoot().then(function (b) {
+    state.month = b.current_month;
+    state.reportMonth = b.report_default_month;
+    state.budgetMonth = b.current_month;
+    return loadEntries();
+  }).catch(fail);
+
+  window.__app = { state: state, sound: sound, SAVE_ANIM: SAVE_ANIM, keypadPress: keypadPress, openForm: openForm, donutSlices: donutSlices,
+    BUDGET_COLORS: BUDGET_COLORS, DONUT_COLORS: DONUT_COLORS, DONUT_REST: DONUT_REST, catSvg: catSvg };
+})();
+</script>

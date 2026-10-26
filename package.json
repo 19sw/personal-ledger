@@ -1,0 +1,16 @@
+{
+  "name": "build-with-ai-bookkeeping",
+  "version": "0.1.0",
+  "private": true,
+  "description": "个人记账应用（Google Apps Script + Google 表格）。运行时没有任何第三方依赖。",
+  "license": "UNLICENSED",
+  "scripts": {
+    "test": "node --test tests/",
+    "preview": "node tools/preview.js",
+    "check:i18n": "node tools/check-i18n.js"
+  },
+  "devDependencies": {
+    "@google/clasp": "^3.4.1",
+    "jsdom": "^29.1.1"
+  }
+}
