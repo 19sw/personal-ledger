@@ -797,6 +797,7 @@ docs/
 
 ### 9.5 公开仓库的安全规则
 
+- **演示视频（2026-10-26）：** https://youtu.be/xssMU2v_Yyk （YouTube 公开，3 分 27 秒，未登录可访问）。
 - **公开仓库（2026-10-26）：** https://github.com/19sw/personal-ledger 。由本机仓库的单提交快照（本地分支 `public-snapshot`）推送而来，不含 `.multiagent/`、`START_HERE.md`、`AGENTS.md`、`CLAUDE.md` 和学习者档案；作者为 GitHub 免登记邮箱。以后更新公开仓库时，同样先做快照和检查，不要直接推送本机完整历史。
 
 - 仓库中不出现：口令、收件口网址、表格 ID、脚本 ID 以外的任何标识、真实邮件、真实账目、截图中的卡号或金额。表格 ID 和口令放在“脚本属性”中 [S16]。
